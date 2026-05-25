@@ -50,6 +50,18 @@ def clear_saved_glass_addresses(config: GatewayConfig) -> tuple[str, str, str, s
     )
 
 
+def save_glass_identity(config_store: GatewayConfigStore, identity: tuple[str, str, str, str, str]) -> None:
+    """永続設定へ再接続に必要なグラス情報だけを書き戻す。"""
+
+    persisted_config = config_store.load()
+    persisted_config.glass.left_address = identity[0]
+    persisted_config.glass.right_address = identity[1]
+    persisted_config.glass.left_mac_address = identity[2]
+    persisted_config.glass.right_mac_address = identity[3]
+    persisted_config.glass.last_serial_number = identity[4]
+    config_store.save(persisted_config)
+
+
 class GatewayServerApp:
     """G2Client と aiohttp を束ねるアプリケーション本体。"""
 
@@ -94,20 +106,34 @@ class GatewayServerApp:
     async def start(self) -> None:
         """BLE クライアントと HTTP サーバーを起動する。"""
 
-        await self._client.start()
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-        self._site = web.TCPSite(
-            self._runner,
-            host=self._config.server.host,
-            port=self._config.server.port,
-        )
-        await self._site.start()
-        LOGGER.info(
-            "Gateway server started on http://%s:%s",
-            self._config.server.host,
-            self._config.server.port,
-        )
+        client_started = False
+        try:
+            await self._client.start()
+            client_started = True
+            self._runner = web.AppRunner(self._app)
+            await self._runner.setup()
+            self._site = web.TCPSite(
+                self._runner,
+                host=self._config.server.host,
+                port=self._config.server.port,
+            )
+            await self._site.start()
+            LOGGER.info(
+                "Gateway server started on http://%s:%s",
+                self._config.server.host,
+                self._config.server.port,
+            )
+        except Exception:
+            LOGGER.exception("Gateway server startup failed")
+            self._site = None
+            if self._runner is not None:
+                with suppress(Exception):
+                    await self._runner.cleanup()
+                self._runner = None
+            if client_started:
+                with suppress(Exception):
+                    await self._client.stop()
+            raise
 
     async def stop(self) -> None:
         """HTTP と BLE の両方を停止する。"""
@@ -253,7 +279,7 @@ class GatewayServerApp:
         """次回再接続用の保存済みアドレスを明示的に消す。"""
 
         cleared_identity = clear_saved_glass_addresses(self._config)
-        self._config_store.save(self._config)
+        save_glass_identity(self._config_store, cleared_identity)
         self._last_persisted_identity = cleared_identity
         await self._client.clear_saved_addresses()
 
@@ -314,7 +340,7 @@ class GatewayServerApp:
         self._config.glass.left_mac_address = identity[2]
         self._config.glass.right_mac_address = identity[3]
         self._config.glass.last_serial_number = identity[4]
-        self._config_store.save(self._config)
+        save_glass_identity(self._config_store, identity)
         self._last_persisted_identity = identity
 
     def _enqueue_websocket_event(self, client: _WebSocketClient, event: Dict[str, Any]) -> bool:
@@ -563,16 +589,20 @@ def load_config_from_args(args: argparse.Namespace) -> tuple[GatewayConfig, Gate
 
     config_store = GatewayConfigStore(Path(args.config))
     config = config_store.load()
+    if args.clear_saved_addresses:
+        clear_saved_glass_addresses(config)
+        config_store.save(config)
+    elif not config_store.path.exists():
+        config_store.save(config)
+
     if args.host:
         config.server.host = args.host
     if args.port:
         config.server.port = args.port
     if args.search_id is not None:
         config.glass.search_id = args.search_id
-    if args.clear_saved_addresses:
-        clear_saved_glass_addresses(config)
-    config.gui.enabled = not args.no_gui
-    config_store.save(config)
+    if args.no_gui:
+        config.gui.enabled = False
     return config, config_store
 
 

@@ -128,6 +128,8 @@ class G2Client:
 
         self._stop_event.set()
         self._disconnected_event.set()
+        self._disconnect_in_progress = True
+        self._connection_generation += 1
         await self._cancel_last_error_clear_task()
         await self._stop_background_tasks()
         await self._disconnect_clients()
@@ -287,6 +289,7 @@ class G2Client:
         pair = await self._resolve_pair()
         await self._set_phase(ConnectionPhase.CONNECTING)
         generation = await self._connect_pair(pair)
+        self._ensure_current_connection(generation, "connect")
         await self._set_phase(ConnectionPhase.INITIALIZING)
         await self._run_init_sequence()
         self._ensure_current_connection(generation, "initialization")
@@ -377,6 +380,19 @@ class G2Client:
         self._state.right.connected = True
         await self._emit_status_snapshot()
         return generation
+
+    def _ensure_current_connection(self, generation: int, operation: str) -> None:
+        """接続世代が変わっていないことを write 前後で確認する。"""
+
+        if generation != self._connection_generation:
+            raise RuntimeError(f"connection changed during {operation}")
+        if self._disconnect_in_progress:
+            raise RuntimeError(f"disconnect is already in progress during {operation}")
+        if self._left_client is None or self._right_client is None:
+            raise RuntimeError(f"connection clients are missing during {operation}")
+        for side, client in (("left", self._left_client), ("right", self._right_client)):
+            if getattr(client, "is_connected", True) is False:
+                raise RuntimeError(f"{side} G2 lens is not connected during {operation}")
 
     async def _run_init_sequence(self) -> None:
         """G2.kt と設計に基づく最小初期化シーケンスを送る。"""
@@ -469,6 +485,11 @@ class G2Client:
     async def _cleanup_after_connection_failure(self) -> None:
         """接続/初期化失敗後に stale client と stale state を残さない。"""
 
+        async with self._disconnect_lock:
+            if not self._disconnect_in_progress:
+                self._disconnect_in_progress = True
+                self._connection_generation += 1
+            self._state.ready = False
         await self._stop_background_tasks()
         await self._disconnect_clients()
         self._state.page.reset_runtime_flags()
@@ -476,13 +497,50 @@ class G2Client:
         self._state.left.authenticated = False
         self._state.right.authenticated = False
 
-    async def _start_background_tasks(self) -> None:
+    async def _start_background_tasks(self, generation: int) -> None:
         """heartbeat と text queue の常駐タスクを起動する。"""
 
         await self._stop_background_tasks()
-        self._heartbeat_task = asyncio.create_task(self._even_hub_heartbeat_loop())
-        self._dev_settings_heartbeat_task = asyncio.create_task(self._dev_settings_heartbeat_loop())
-        self._text_queue_task = asyncio.create_task(self._text_queue_loop())
+        self._heartbeat_task = self._create_background_task(
+            self._even_hub_heartbeat_loop(generation),
+            "g2-even-hub-heartbeat",
+        )
+        self._dev_settings_heartbeat_task = self._create_background_task(
+            self._dev_settings_heartbeat_loop(generation),
+            "g2-dev-settings-heartbeat",
+        )
+        self._text_queue_task = self._create_background_task(
+            self._text_queue_loop(generation),
+            "g2-text-queue",
+        )
+
+    def _create_background_task(self, awaitable: Awaitable[None], name: str) -> asyncio.Task[None]:
+        """常駐タスクの異常終了を再接続へつなげる。"""
+
+        task = asyncio.create_task(awaitable, name=name)
+        task.add_done_callback(self._handle_background_task_done)
+        return task
+
+    def _handle_background_task_done(self, task: asyncio.Task[None]) -> None:
+        """常駐タスクが write 例外などで落ちたときに切断処理を起こす。"""
+
+        if task.cancelled() or self._stop_event.is_set():
+            return
+        try:
+            exception = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exception is None:
+            return
+        LOGGER.warning(
+            "G2 background task failed; forcing reconnect",
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._handle_disconnect("background_task"),
+            )
 
     async def _stop_background_tasks(self) -> None:
         """常駐タスクを安全に止める。"""
@@ -498,20 +556,27 @@ class G2Client:
         for task in tasks:
             task.cancel()
         for task in tasks:
-            with suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                LOGGER.debug("G2 background task had already failed while stopping", exc_info=True)
         self._pending_text_msg = None
         self._last_even_hub_msg = None
         self._last_even_hub_resends_remaining = 0
+        self._pending_urgent_writes = 0
 
-    async def _even_hub_heartbeat_loop(self) -> None:
+    async def _even_hub_heartbeat_loop(self, generation: int) -> None:
         """EvenHub heartbeat を一定周期で送り、送信遅延で周期が伸び続けないようにする。"""
 
         interval = self._config.heartbeat_interval_sec
         loop = asyncio.get_running_loop()
         next_deadline = loop.time() + interval
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() and generation == self._connection_generation:
             await asyncio.sleep(max(0.0, next_deadline - loop.time()))
+            if generation != self._connection_generation:
+                return
             if not self._state.ready:
                 next_deadline = loop.time() + interval
                 continue
@@ -526,14 +591,16 @@ class G2Client:
             while next_deadline <= now:
                 next_deadline += interval
 
-    async def _dev_settings_heartbeat_loop(self) -> None:
+    async def _dev_settings_heartbeat_loop(self, generation: int) -> None:
         """DevSettings heartbeat を一定周期で送り、送信待ちで周期が伸び続けないようにする。"""
 
         interval = self._config.heartbeat_interval_sec
         loop = asyncio.get_running_loop()
-        next_deadline = loop.time() + interval
-        while not self._stop_event.is_set():
+        next_deadline = loop.time() + interval + (interval / 2)
+        while not self._stop_event.is_set() and generation == self._connection_generation:
             await asyncio.sleep(max(0.0, next_deadline - loop.time()))
+            if generation != self._connection_generation:
+                return
             if not self._state.ready:
                 next_deadline = loop.time() + interval
                 continue
@@ -547,11 +614,13 @@ class G2Client:
             while next_deadline <= now:
                 next_deadline += interval
 
-    async def _text_queue_loop(self) -> None:
+    async def _text_queue_loop(self, generation: int) -> None:
         """最新 text update だけを一定間隔で排出する。"""
 
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() and generation == self._connection_generation:
             await asyncio.sleep(self._config.text_queue_interval_ms / 1000)
+            if generation != self._connection_generation:
+                return
             if not self._state.ready:
                 continue
             payload: Optional[bytes] = None
@@ -968,11 +1037,26 @@ class G2Client:
                 if not urgent:
                     await self._wait_for_urgent_writes()
                 async with self._write_lock:
+                    if self._disconnect_in_progress and not self._stop_event.is_set():
+                        raise RuntimeError("cannot send while disconnect is in progress")
                     writes = []
+                    missing_sides = []
                     if right and self._right_client is not None:
-                        writes.append(self._right_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                        if getattr(self._right_client, "is_connected", True) is False:
+                            missing_sides.append("right")
+                        else:
+                            writes.append(self._right_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                    elif right:
+                        missing_sides.append("right")
                     if left and self._left_client is not None:
-                        writes.append(self._left_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                        if getattr(self._left_client, "is_connected", True) is False:
+                            missing_sides.append("left")
+                        else:
+                            writes.append(self._left_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                    elif left:
+                        missing_sides.append("left")
+                    if missing_sides:
+                        raise RuntimeError(f"cannot send to disconnected G2 lens: {', '.join(missing_sides)}")
                     if writes:
                         await asyncio.gather(*writes)
                 if index < len(packets) - 1:
@@ -992,7 +1076,12 @@ class G2Client:
 
         self._pending_text_msg = payload
 
-    def _make_notify_callback(self, source_key: str, is_audio: bool) -> Callable[[Any, bytearray], None]:
+    def _make_notify_callback(
+        self,
+        source_key: str,
+        is_audio: bool,
+        generation: int,
+    ) -> Callable[[Any, bytearray], None]:
         """Bleak の通知コールバックを asyncio タスクへ橋渡しする。"""
 
         def callback(_: Any, data: bytearray) -> None:
@@ -1000,24 +1089,35 @@ class G2Client:
                 return
             self._loop.call_soon_threadsafe(
                 asyncio.create_task,
-                self._handle_notification(bytes(data), source_key, is_audio),
+                self._handle_notification(bytes(data), source_key, is_audio, generation),
             )
 
         return callback
 
-    def _make_disconnect_callback(self, side: str) -> Callable[[Any], None]:
+    def _make_disconnect_callback(self, side: str, generation: int) -> Callable[[Any], None]:
         """Bleak 切断通知を event loop 側へ戻す。"""
 
         def callback(client: Any) -> None:
             if self._loop is None:
                 return
-            current_client = self._left_client if side == "left" else self._right_client
-            if current_client is not client:
-                LOGGER.debug("Ignoring disconnect from non-current %s client", side)
-                return
-            self._loop.call_soon_threadsafe(asyncio.create_task, self._handle_disconnect(side))
+            self._loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._handle_disconnect_if_current(side, client, generation),
+            )
 
         return callback
+
+    async def _handle_disconnect_if_current(self, side: str, client: Any, generation: int) -> None:
+        """stale な Bleak disconnect callback を無視する。"""
+
+        if generation != self._connection_generation:
+            LOGGER.debug("Ignoring stale disconnect callback from %s lens", side)
+            return
+        current_client = self._left_client if side == "left" else self._right_client
+        if current_client is not client:
+            LOGGER.debug("Ignoring disconnect from non-current %s client", side)
+            return
+        await self._handle_disconnect(side)
 
     async def _await_all_or_raise(self, *awaitables: Awaitable[Any]) -> None:
         """並列 awaitable 群をすべて settle させ、例外があれば最後に送出する。"""
@@ -1032,22 +1132,43 @@ class G2Client:
 
         if self._stop_event.is_set():
             return
-        LOGGER.warning("G2 disconnected: %s", side)
-        await self._stop_background_tasks()
-        self._state.ready = False
-        self._state.page.reset_runtime_flags()
-        self._state.mic_enabled = False
-        self._state.left.connected = False
-        self._state.right.connected = False
-        self._state.left.authenticated = False
-        self._state.right.authenticated = False
-        await self._emit("connection.state", {"phase": ConnectionPhase.RECOVERING.value, "reason": f"{side}_disconnected"})
-        await self._set_phase(ConnectionPhase.RECOVERING)
-        await self._disconnect_clients()
-        self._disconnected_event.set()
+        async with self._disconnect_lock:
+            if self._disconnect_in_progress:
+                LOGGER.debug("Ignoring duplicate disconnect while already recovering: %s", side)
+                return
+            self._disconnect_in_progress = True
+            self._connection_generation += 1
+            self._state.ready = False
+            self._state.page.reset_runtime_flags()
+            self._state.mic_enabled = False
+            self._state.left.connected = False
+            self._state.right.connected = False
+            self._state.left.authenticated = False
+            self._state.right.authenticated = False
 
-    async def _handle_notification(self, raw_data: bytes, source_key: str, is_audio: bool) -> None:
+        LOGGER.warning("G2 disconnected: %s", side)
+        try:
+            await self._emit(
+                "connection.state",
+                {"phase": ConnectionPhase.RECOVERING.value, "reason": f"{side}_disconnected"},
+            )
+            await self._set_phase(ConnectionPhase.RECOVERING)
+            await self._stop_background_tasks()
+            await self._disconnect_clients()
+        finally:
+            self._disconnected_event.set()
+
+    async def _handle_notification(
+        self,
+        raw_data: bytes,
+        source_key: str,
+        is_audio: bool,
+        generation: int,
+    ) -> None:
         """notify / audio notify を正規化イベントへ変換する。"""
+
+        if generation != self._connection_generation or self._disconnect_in_progress:
+            return
 
         if self._config.debug_raw_events and not is_audio:
             await self._emit(
