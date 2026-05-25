@@ -9,7 +9,7 @@ import copy
 import inspect
 import logging
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 try:
     from bleak import BleakClient
@@ -81,6 +81,9 @@ class G2Client:
         self._disconnect_lock = asyncio.Lock()
         self._disconnect_in_progress = False
         self._connection_generation = 0
+        self._side_generations: Dict[str, int] = {"left": 0, "right": 0}
+        self._reconnecting_sides: Set[str] = set()
+        self._side_reconnect_tasks: Dict[str, asyncio.Task[None]] = {}
 
         self._left_client: Optional[Any] = None
         self._right_client: Optional[Any] = None
@@ -131,6 +134,7 @@ class G2Client:
         self._disconnect_in_progress = True
         self._connection_generation += 1
         await self._cancel_last_error_clear_task()
+        await self._cancel_side_reconnect_tasks()
         await self._stop_background_tasks()
         await self._disconnect_clients()
         if self._runner_task is not None:
@@ -197,7 +201,7 @@ class G2Client:
     async def request_device_info(self) -> None:
         """battery / firmware 情報取得をグラスへ要求する。"""
 
-        if not self._right_client:
+        if not self._is_side_connected("right"):
             return
         await self._send_g2_setting_command(
             g2_setting.request_info(self._send_manager.next_magic_random())
@@ -342,13 +346,18 @@ class G2Client:
         self._connection_generation += 1
         generation = self._connection_generation
         self._disconnect_in_progress = False
+        self._reconnecting_sides.clear()
+        self._side_generations["left"] += 1
+        self._side_generations["right"] += 1
+        left_generation = self._side_generations["left"]
+        right_generation = self._side_generations["right"]
         left_client = bleak_client_class(
             pair.left.bleak_device,
-            disconnected_callback=self._make_disconnect_callback("left", generation),
+            disconnected_callback=self._make_disconnect_callback("left", generation, left_generation),
         )
         right_client = bleak_client_class(
             pair.right.bleak_device,
-            disconnected_callback=self._make_disconnect_callback("right", generation),
+            disconnected_callback=self._make_disconnect_callback("right", generation, right_generation),
         )
         control_gap_sec = max(self._config.ble_packet_gap_ms / 1000, 0.05)
 
@@ -357,13 +366,25 @@ class G2Client:
             await asyncio.sleep(control_gap_sec)
             await right_client.connect()
             await asyncio.sleep(control_gap_sec)
-            await left_client.start_notify(CHAR_NOTIFY, self._make_notify_callback("L", False, generation))
+            await left_client.start_notify(
+                CHAR_NOTIFY,
+                self._make_notify_callback("L", False, generation, left_generation),
+            )
             await asyncio.sleep(control_gap_sec)
-            await left_client.start_notify(AUDIO_NOTIFY, self._make_notify_callback("L", True, generation))
+            await left_client.start_notify(
+                AUDIO_NOTIFY,
+                self._make_notify_callback("L", True, generation, left_generation),
+            )
             await asyncio.sleep(control_gap_sec)
-            await right_client.start_notify(CHAR_NOTIFY, self._make_notify_callback("R", False, generation))
+            await right_client.start_notify(
+                CHAR_NOTIFY,
+                self._make_notify_callback("R", False, generation, right_generation),
+            )
             await asyncio.sleep(control_gap_sec)
-            await right_client.start_notify(AUDIO_NOTIFY, self._make_notify_callback("R", True, generation))
+            await right_client.start_notify(
+                AUDIO_NOTIFY,
+                self._make_notify_callback("R", True, generation, right_generation),
+            )
         except Exception:
             for client in (left_client, right_client):
                 with suppress(Exception):
@@ -388,6 +409,9 @@ class G2Client:
             raise RuntimeError(f"connection changed during {operation}")
         if self._disconnect_in_progress:
             raise RuntimeError(f"disconnect is already in progress during {operation}")
+        if self._reconnecting_sides:
+            sides = ", ".join(sorted(self._reconnecting_sides))
+            raise RuntimeError(f"partial reconnect is in progress during {operation}: {sides}")
         if self._left_client is None or self._right_client is None:
             raise RuntimeError(f"connection clients are missing during {operation}")
         for side, client in (("left", self._left_client), ("right", self._right_client)):
@@ -482,6 +506,48 @@ class G2Client:
         self._state.right.connected = False
         self._state.ready = False
 
+    async def _disconnect_side_client(self, side: str) -> None:
+        """片側だけの stale BleakClient を切断して state から外す。"""
+
+        if side == "left":
+            client = self._left_client
+            self._left_client = None
+            self._state.left.connected = False
+            self._state.left.authenticated = False
+        elif side == "right":
+            client = self._right_client
+            self._right_client = None
+            self._state.right.connected = False
+            self._state.right.authenticated = False
+        else:
+            return
+        if client is not None:
+            with suppress(Exception):
+                await client.disconnect()
+
+    def _side_client(self, side: str) -> Optional[Any]:
+        """side 名から現在の BleakClient を返す。"""
+
+        if side == "left":
+            return self._left_client
+        if side == "right":
+            return self._right_client
+        return None
+
+    def _is_side_connected(self, side: str) -> bool:
+        """state と BleakClient の両方から片側接続可否を確認する。"""
+
+        client = self._side_client(side)
+        if client is None or side in self._reconnecting_sides:
+            return False
+        if getattr(client, "is_connected", True) is False:
+            return False
+        if side == "left":
+            return self._state.left.connected
+        if side == "right":
+            return self._state.right.connected
+        return False
+
     async def _cleanup_after_connection_failure(self) -> None:
         """接続/初期化失敗後に stale client と stale state を残さない。"""
 
@@ -490,6 +556,7 @@ class G2Client:
                 self._disconnect_in_progress = True
                 self._connection_generation += 1
             self._state.ready = False
+        await self._cancel_side_reconnect_tasks()
         await self._stop_background_tasks()
         await self._disconnect_clients()
         self._state.page.reset_runtime_flags()
@@ -532,6 +599,15 @@ class G2Client:
             return
         if exception is None:
             return
+        task_name = task.get_name()
+        failed_side = "background_task"
+        if task_name in ("g2-even-hub-heartbeat", "g2-text-queue"):
+            failed_side = "right"
+        elif task_name == "g2-dev-settings-heartbeat":
+            if self._is_side_connected("right"):
+                failed_side = "right"
+            elif self._is_side_connected("left"):
+                failed_side = "left"
         LOGGER.warning(
             "G2 background task failed; forcing reconnect",
             exc_info=(type(exception), exception, exception.__traceback__),
@@ -539,8 +615,172 @@ class G2Client:
         if self._loop is not None:
             self._loop.call_soon_threadsafe(
                 asyncio.create_task,
-                self._handle_disconnect("background_task"),
+                self._handle_disconnect(failed_side),
             )
+
+    async def _cancel_side_reconnect_tasks(self) -> None:
+        """片側再接続タスクを止める。"""
+
+        tasks = list(self._side_reconnect_tasks.values())
+        current_task = asyncio.current_task()
+        self._side_reconnect_tasks.clear()
+        self._reconnecting_sides.clear()
+        for task in tasks:
+            if task is not current_task:
+                task.cancel()
+        for task in tasks:
+            if task is current_task:
+                continue
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                LOGGER.debug("G2 side reconnect task had already failed while stopping", exc_info=True)
+
+    def _start_side_reconnect_task(self, side: str, generation: int) -> None:
+        """生きている片側を維持したまま、切れた側だけ reconnect する。"""
+
+        existing = self._side_reconnect_tasks.get(side)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._side_reconnect_loop(side, generation),
+            name=f"g2-{side}-reconnect",
+        )
+        self._side_reconnect_tasks[side] = task
+
+    async def _side_reconnect_loop(self, side: str, generation: int) -> None:
+        """片側再接続を成功するまで繰り返す。"""
+
+        try:
+            while not self._stop_event.is_set() and generation == self._connection_generation:
+                try:
+                    await self._reconnect_side_once(side, generation)
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    message = str(exc)
+                    LOGGER.warning("G2 %s side reconnect failed: %s", side, message)
+                    self._state.last_error = message
+                    await self._emit("system.error", {"message": message, "side": side})
+                    await self._emit_status_snapshot()
+                    await asyncio.sleep(self._config.reconnect_interval_sec)
+        finally:
+            current_task = asyncio.current_task()
+            if self._side_reconnect_tasks.get(side) is current_task:
+                self._side_reconnect_tasks.pop(side, None)
+
+    async def _reconnect_side_once(self, side: str, generation: int) -> None:
+        """片側だけの Bleak 接続と最小初期化をやり直す。"""
+
+        if side not in ("left", "right"):
+            raise ValueError(f"unsupported reconnect side: {side}")
+        self._reconnecting_sides.add(side)
+        address = self._state.left.address if side == "left" else self._state.right.address
+        if not address:
+            raise RuntimeError(f"cannot reconnect {side} G2 lens without saved address")
+
+        bleak_client_class = self._require_bleak_client()
+        self._side_generations[side] += 1
+        side_generation = self._side_generations[side]
+        source_key = "L" if side == "left" else "R"
+        control_gap_sec = max(self._config.ble_packet_gap_ms / 1000, 0.05)
+        client = bleak_client_class(
+            address,
+            disconnected_callback=self._make_disconnect_callback(side, generation, side_generation),
+        )
+
+        try:
+            await client.connect()
+            await asyncio.sleep(control_gap_sec)
+            await client.start_notify(
+                CHAR_NOTIFY,
+                self._make_notify_callback(source_key, False, generation, side_generation),
+            )
+            await asyncio.sleep(control_gap_sec)
+            await client.start_notify(
+                AUDIO_NOTIFY,
+                self._make_notify_callback(source_key, True, generation, side_generation),
+            )
+        except Exception:
+            with suppress(Exception):
+                await client.disconnect()
+            raise
+
+        if generation != self._connection_generation or self._stop_event.is_set():
+            with suppress(Exception):
+                await client.disconnect()
+            self._reconnecting_sides.discard(side)
+            return
+
+        if side == "left":
+            self._left_client = client
+            self._state.left.connected = True
+            self._state.left.authenticated = False
+        else:
+            self._right_client = client
+            self._state.right.connected = True
+            self._state.right.authenticated = False
+
+        self._reconnecting_sides.discard(side)
+        try:
+            await self._run_side_reconnect_init(side)
+        except Exception:
+            self._reconnecting_sides.add(side)
+            await self._disconnect_side_client(side)
+            raise
+        if self._is_side_connected("left") and self._is_side_connected("right"):
+            self._state.ready = True
+            await self._set_phase(ConnectionPhase.READY)
+            await self._restore_runtime_state()
+        else:
+            await self._emit_status_snapshot()
+        LOGGER.info("G2 %s side reconnected", side)
+
+    async def _run_side_reconnect_init(self, side: str) -> None:
+        """片側 reconnect 後に必要な最小初期化を送る。"""
+
+        if side == "left":
+            await self._send_dev_settings_command(
+                dev_settings.auth_cmd(self._send_manager.next_magic_random()),
+                left=True,
+                right=False,
+            )
+            return
+
+        await self._send_dev_settings_command(
+            dev_settings.auth_cmd(self._send_manager.next_magic_random()),
+            left=False,
+            right=True,
+        )
+        await asyncio.sleep(0.2)
+        await self._send_dev_settings_command(
+            dev_settings.pipe_role_change(self._send_manager.next_magic_random()),
+            left=False,
+            right=True,
+        )
+        await asyncio.sleep(0.2)
+        await self._send_dev_settings_command(
+            dev_settings.time_sync(self._send_manager.next_magic_random()),
+            left=False,
+            right=True,
+        )
+        await asyncio.sleep(0.2)
+        await self._send_onboarding_command(onboarding.skip_onboarding(self._send_manager.next_magic_random()))
+        await asyncio.sleep(0.2)
+        await self._send_even_ai_command(even_ai.set_hey_even(self._send_manager.next_magic_random(), enabled=False))
+        await asyncio.sleep(0.2)
+        await self._send_g2_setting_command(g2_setting.set_universe_settings(self._send_manager.next_magic_random()))
+        await asyncio.sleep(0.2)
+        await self._send_calendar_command(calendar.default_config_message(self._send_manager.next_magic_random()))
+        await asyncio.sleep(0.2)
+        await self._send_dashboard_command(dashboard.display_settings_message(self._send_manager.next_magic_random()))
+        await asyncio.sleep(0.2)
+        await self._ensure_startup_page(" ")
+        await asyncio.sleep(0.2)
+        await self.request_device_info()
 
     async def _stop_background_tasks(self) -> None:
         """常駐タスクを安全に止める。"""
@@ -577,7 +817,7 @@ class G2Client:
             await asyncio.sleep(max(0.0, next_deadline - loop.time()))
             if generation != self._connection_generation:
                 return
-            if not self._state.ready:
+            if not self._is_side_connected("right"):
                 next_deadline = loop.time() + interval
                 continue
             await self._send_even_hub_command(
@@ -601,13 +841,15 @@ class G2Client:
             await asyncio.sleep(max(0.0, next_deadline - loop.time()))
             if generation != self._connection_generation:
                 return
-            if not self._state.ready:
+            right_connected = self._is_side_connected("right")
+            left_connected = self._is_side_connected("left")
+            if not right_connected and not left_connected:
                 next_deadline = loop.time() + interval
                 continue
             await self._send_dev_settings_command(
                 dev_settings.base_heartbeat(self._send_manager.next_magic_random()),
-                left=False,
-                right=True,
+                left=not right_connected and left_connected,
+                right=right_connected,
                 urgent=True,
             )
             now = loop.time()
@@ -621,7 +863,7 @@ class G2Client:
             await asyncio.sleep(self._config.text_queue_interval_ms / 1000)
             if generation != self._connection_generation:
                 return
-            if not self._state.ready:
+            if not self._is_side_connected("right"):
                 continue
             payload: Optional[bytes] = None
             if self._pending_text_msg is not None:
@@ -1039,26 +1281,49 @@ class G2Client:
                 async with self._write_lock:
                     if self._disconnect_in_progress and not self._stop_event.is_set():
                         raise RuntimeError("cannot send while disconnect is in progress")
-                    writes = []
+                    writes: List[Tuple[str, Awaitable[Any]]] = []
                     missing_sides = []
                     if right and self._right_client is not None:
-                        if getattr(self._right_client, "is_connected", True) is False:
+                        right_is_disconnected = (
+                            "right" in self._reconnecting_sides
+                            or getattr(self._right_client, "is_connected", True) is False
+                        )
+                        if right_is_disconnected:
                             missing_sides.append("right")
                         else:
-                            writes.append(self._right_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                            writes.append(
+                                ("right", self._right_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                            )
                     elif right:
                         missing_sides.append("right")
                     if left and self._left_client is not None:
-                        if getattr(self._left_client, "is_connected", True) is False:
+                        left_is_disconnected = (
+                            "left" in self._reconnecting_sides
+                            or getattr(self._left_client, "is_connected", True) is False
+                        )
+                        if left_is_disconnected:
                             missing_sides.append("left")
                         else:
-                            writes.append(self._left_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                            writes.append(
+                                ("left", self._left_client.write_gatt_char(CHAR_WRITE, packet, response=False))
+                            )
                     elif left:
                         missing_sides.append("left")
                     if missing_sides:
                         raise RuntimeError(f"cannot send to disconnected G2 lens: {', '.join(missing_sides)}")
                     if writes:
-                        await asyncio.gather(*writes)
+                        results = await asyncio.gather(
+                            *(write for _, write in writes),
+                            return_exceptions=True,
+                        )
+                        first_exception: Optional[Exception] = None
+                        for (write_side, _), result in zip(writes, results):
+                            if isinstance(result, Exception):
+                                asyncio.create_task(self._handle_disconnect(write_side))
+                                if first_exception is None:
+                                    first_exception = result
+                        if first_exception is not None:
+                            raise first_exception
                 if index < len(packets) - 1:
                     await asyncio.sleep(self._config.ble_packet_gap_ms / 1000)
         finally:
@@ -1081,6 +1346,7 @@ class G2Client:
         source_key: str,
         is_audio: bool,
         generation: int,
+        side_generation: int,
     ) -> Callable[[Any, bytearray], None]:
         """Bleak の通知コールバックを asyncio タスクへ橋渡しする。"""
 
@@ -1089,12 +1355,17 @@ class G2Client:
                 return
             self._loop.call_soon_threadsafe(
                 asyncio.create_task,
-                self._handle_notification(bytes(data), source_key, is_audio, generation),
+                self._handle_notification(bytes(data), source_key, is_audio, generation, side_generation),
             )
 
         return callback
 
-    def _make_disconnect_callback(self, side: str, generation: int) -> Callable[[Any], None]:
+    def _make_disconnect_callback(
+        self,
+        side: str,
+        generation: int,
+        side_generation: int,
+    ) -> Callable[[Any], None]:
         """Bleak 切断通知を event loop 側へ戻す。"""
 
         def callback(client: Any) -> None:
@@ -1102,16 +1373,25 @@ class G2Client:
                 return
             self._loop.call_soon_threadsafe(
                 asyncio.create_task,
-                self._handle_disconnect_if_current(side, client, generation),
+                self._handle_disconnect_if_current(side, client, generation, side_generation),
             )
 
         return callback
 
-    async def _handle_disconnect_if_current(self, side: str, client: Any, generation: int) -> None:
+    async def _handle_disconnect_if_current(
+        self,
+        side: str,
+        client: Any,
+        generation: int,
+        side_generation: int,
+    ) -> None:
         """stale な Bleak disconnect callback を無視する。"""
 
         if generation != self._connection_generation:
             LOGGER.debug("Ignoring stale disconnect callback from %s lens", side)
+            return
+        if side_generation != self._side_generations.get(side):
+            LOGGER.debug("Ignoring stale side-generation disconnect callback from %s lens", side)
             return
         current_client = self._left_client if side == "left" else self._right_client
         if current_client is not client:
@@ -1132,9 +1412,68 @@ class G2Client:
 
         if self._stop_event.is_set():
             return
+        if side not in ("left", "right"):
+            await self._handle_full_disconnect(side)
+            return
+
+        old_client: Optional[Any] = None
+        should_reconnect_side = False
+        full_disconnect_reason = ""
         async with self._disconnect_lock:
             if self._disconnect_in_progress:
                 LOGGER.debug("Ignoring duplicate disconnect while already recovering: %s", side)
+                return
+            if side in self._reconnecting_sides:
+                LOGGER.debug("Ignoring duplicate %s side disconnect while reconnecting", side)
+                return
+
+            other_side = "right" if side == "left" else "left"
+            generation = self._connection_generation
+            self._reconnecting_sides.add(side)
+            self._side_generations[side] += 1
+            self._state.ready = False
+
+            if side == "left":
+                old_client = self._left_client
+                self._left_client = None
+                self._state.left.connected = False
+                self._state.left.authenticated = False
+            else:
+                old_client = self._right_client
+                self._right_client = None
+                self._state.right.connected = False
+                self._state.right.authenticated = False
+                self._state.page.reset_runtime_flags()
+                self._state.mic_enabled = False
+
+            should_reconnect_side = self._is_side_connected(other_side)
+            if not should_reconnect_side:
+                full_disconnect_reason = f"{side}_disconnected_without_peer"
+
+        if old_client is not None:
+            with suppress(Exception):
+                await old_client.disconnect()
+
+        if should_reconnect_side:
+            LOGGER.warning("G2 disconnected: %s; reconnecting that side only", side)
+            await self._emit(
+                "connection.state",
+                {"phase": ConnectionPhase.RECOVERING.value, "reason": f"{side}_disconnected_partial"},
+            )
+            await self._set_phase(ConnectionPhase.RECOVERING)
+            self._start_side_reconnect_task(side, generation)
+            return
+
+        await self._handle_full_disconnect(full_disconnect_reason or f"{side}_disconnected")
+
+    async def _handle_full_disconnect(self, reason: str) -> None:
+        """両側を落として既存の full reconnect loop へ戻す。"""
+
+        if self._stop_event.is_set():
+            return
+        async with self._disconnect_lock:
+            if self._disconnect_in_progress:
+                LOGGER.debug("Ignoring duplicate full disconnect while already recovering: %s", reason)
                 return
             self._disconnect_in_progress = True
             self._connection_generation += 1
@@ -1146,13 +1485,14 @@ class G2Client:
             self._state.left.authenticated = False
             self._state.right.authenticated = False
 
-        LOGGER.warning("G2 disconnected: %s", side)
+        LOGGER.warning("G2 disconnected: %s", reason)
         try:
             await self._emit(
                 "connection.state",
-                {"phase": ConnectionPhase.RECOVERING.value, "reason": f"{side}_disconnected"},
+                {"phase": ConnectionPhase.RECOVERING.value, "reason": reason},
             )
             await self._set_phase(ConnectionPhase.RECOVERING)
+            await self._cancel_side_reconnect_tasks()
             await self._stop_background_tasks()
             await self._disconnect_clients()
         finally:
@@ -1164,10 +1504,16 @@ class G2Client:
         source_key: str,
         is_audio: bool,
         generation: int,
+        side_generation: int,
     ) -> None:
         """notify / audio notify を正規化イベントへ変換する。"""
 
         if generation != self._connection_generation or self._disconnect_in_progress:
+            return
+        side = "left" if source_key == "L" else "right"
+        if side_generation != self._side_generations.get(side):
+            return
+        if side in self._reconnecting_sides:
             return
 
         if self._config.debug_raw_events and not is_audio:
