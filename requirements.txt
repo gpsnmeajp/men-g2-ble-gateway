@@ -1,0 +1,4 @@
+aiohttp
+bleak
+Pillow
+PyYAML

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Even G2 Gateway</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Even G2 Gateway</p>
+      <h1>接続状態と手動試験</h1>
+      <p class="lead">現在の状態確認、テキスト送信、画像送信、マイク制御、イベント監視を 1 ページで行います。</p>
+    </section>
+
+    <section class="panel grid two">
+      <div class="card">
+        <h2>状態</h2>
+        <dl id="statusGrid" class="status-grid"></dl>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h2>タッチ操作</h2>
+          <div class="button-row touch-row">
+            <button id="touchSwipeUp"   type="button" data-gesture="swipe_up">↑ 上スワイプ</button>
+            <button id="touchSwipeDown" type="button" data-gesture="swipe_down">↓ 下スワイプ</button>
+            <button id="touchTap"       type="button" data-gesture="single_tap">タップ</button>
+            <button id="touchDoubleTap" type="button" data-gesture="double_tap" class="secondary">ダブルタップ</button>
+          </div>
+          <p id="touchResult" class="result"></p>
+        </div>
+        <div class="card">
+          <h2>マイク</h2>
+          <div class="button-row">
+            <button id="micOnButton" type="button">ON</button>
+            <button id="micOffButton" type="button" class="secondary">OFF</button>
+          </div>
+          <p id="micResult" class="result"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel grid two">
+      <div class="card">
+        <h2>高速テキスト</h2>
+        <form id="textForm">
+          <label for="textInput">テキスト</label>
+          <textarea id="textInput" rows="6" placeholder="ここに表示したいテキストを入力"></textarea>
+          <div class="button-row">
+            <button type="submit">送信</button>
+            <button id="clearButton" type="button" class="secondary">クリア</button>
+          </div>
+        </form>
+        <p id="textResult" class="result"></p>
+      </div>
+
+      <div class="card">
+        <h2>レイアウト合成</h2>
+        <p class="helper-text">画像だけでも送信できます。テキストを入れると、同じリクエストで text と image の layout payload を自動生成します。</p>
+        <form id="imageForm">
+          <label for="imageFile">画像ファイル</label>
+          <input id="imageFile" type="file" accept="image/*">
+          <div class="grid two compact">
+            <label>x<input id="imageX" type="number" value="0" min="0"></label>
+            <label>y<input id="imageY" type="number" value="0" min="0"></label>
+            <label>width<input id="imageWidth" type="number" value="200" min="1"></label>
+            <label>height<input id="imageHeight" type="number" value="100" min="1"></label>
+          </div>
+          <label class="checkbox-label">
+            <input id="keepAspect" type="checkbox" checked>
+            アスペクト比を維持（余白は黒で埋める）
+          </label>
+          <div class="gamma-row">
+            <label for="gammaSlider">ガンマ補正<span class="gamma-hint">（1.0 = 素通し）</span></label>
+            <div class="gamma-controls">
+              <input id="gammaSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0">
+              <input id="gammaValue" type="number" min="0.1" max="3.0" step="0.05" value="1.0">
+            </div>
+          </div>
+          <canvas id="imagePreview" class="image-preview" style="display:none"></canvas>
+
+          <label for="composeText">合成テキスト</label>
+          <textarea id="composeText" rows="4" placeholder="任意: 画像と一緒に表示するテキスト"></textarea>
+          <div class="grid two compact">
+            <label>text x<input id="composeTextX" type="number" value="0" min="0"></label>
+            <label>text y<input id="composeTextY" type="number" value="0" min="0"></label>
+            <label>text width<input id="composeTextWidth" type="number" value="576" min="1"></label>
+            <label>text height<input id="composeTextHeight" type="number" value="72" min="1"></label>
+          </div>
+          <label>padding<input id="composeTextPadding" type="number" value="8" min="0"></label>
+
+          <button type="submit">レイアウトを送信</button>
+        </form>
+        <p id="imageResult" class="result"></p>
+      </div>
+    </section>
+
+    <section class="panel grid two">
+      <div class="card">
+        <h2>レイアウト JSON</h2>
+        <form id="jsonForm">
+          <label for="jsonPayload">display payload</label>
+          <textarea id="jsonPayload" rows="14">{
+  "elements": [
+    {
+      "type": "text",
+      "text": "header",
+      "x": 0,
+      "y": 0,
+      "width": 320,
+      "height": 60,
+      "padding": 4
+    }
+  ]
+}</textarea>
+          <button type="submit">JSON を送信</button>
+        </form>
+        <p id="jsonResult" class="result"></p>
+      </div>
+
+      <div class="card">
+        <h2>イベントログ <button id="clearLogButton" type="button" class="secondary small">クリア</button></h2>
+        <pre id="eventLog" class="event-log"></pre>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# 仮想環境
+.venv/
+venv/
+env/
+ENV/
+
+# 配布 / パッケージング
+dist/
+build/
+*.egg-info/
+*.egg
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# pytest / テスト
+.pytest_cache/
+.tox/
+htmlcov/
+.coverage
+coverage.xml
+
+# mypy / 型チェック
+.mypy_cache/
+.dmypy.json
+
+# IDE / エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ログ・一時ファイル
+*.log
+*.tmp
+
+# Skills（内部ドキュメント）
+skills/
+
+G2.kt
+
+config/
