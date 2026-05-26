@@ -516,7 +516,7 @@ class GatewayStatusWindow:
                 parts.append(f"error={err}")
             return f"[{ts}] {kind}  {' '.join(parts)}"
 
-        if kind == "glasses.audio":
+        if kind == "glasses.mic_audio":
             payload_len = len(data.get("payload", ""))
             return f"[{ts}] {kind}  payload_len={payload_len}"
 

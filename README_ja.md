@@ -275,7 +275,7 @@ python gateway_cli.py [--server URL] [--ws-path PATH] <command>
 
 ---
 
-## 表示制約（Even Hub）
+## 表示制約
 
 | 制約 | 値 |
 |---|---|
@@ -285,7 +285,7 @@ python gateway_cli.py [--server URL] [--ws-path PATH] <command>
 | image コンテナ幅 | 20 〜 288 px |
 | image コンテナ高さ | 20 〜 144 px |
 | create/rebuild 時の初期テキスト | コンテナあたり UTF-8 1 000 バイト以下 |
-| in-place テキスト更新 | 2 000 文字以下 |
+| in-place テキスト更新 | 1000 バイト以下 |
 
 単一コンテナ寸法を超える画像は自動でタイル分割されます。  
 各ページにはイベント捕捉対象の text/list コンテナがちょうど 1 個必要で、必要時はゲートウェイが自動補完します。

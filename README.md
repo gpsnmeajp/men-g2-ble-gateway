@@ -87,7 +87,7 @@ The layout composer can send an image and positioned text together without hand-
 
 ## Configuration
 
-`config/gateway.yaml` is created automatically if it does not exist. All values can be overridden via CLI flags.
+`config/gateway.yaml` is created automatically if it does not exist. 
 
 ```yaml
 server:
@@ -249,7 +249,7 @@ An initial `status.snapshot` event is sent on connection, followed by all device
 | `glasses.battery` | Battery level and charging state |
 | `glasses.firmware` | Firmware version info |
 | `glasses.authentication` | Per-lens authentication result |
-| `glasses.dashboard` | Dashboard menu selection (reserved) |
+| `glasses.dashboard` | Dashboard menu app selection |
 | `glasses.raw_packet` | Raw BLE packet (debug mode only) |
 | `system.error` | Connection or internal error |
 | `system.reinitialize` | Post-exit re-initialisation |
@@ -275,7 +275,7 @@ Default server: `http://127.0.0.1:8765`
 
 ---
 
-## Display constraints (Even Hub)
+## Display constraints
 
 | Constraint | Value |
 |---|---|
@@ -285,7 +285,7 @@ Default server: `http://127.0.0.1:8765`
 | Image container width | 20 – 288 px |
 | Image container height | 20 – 144 px |
 | Initial text per container | ≤ 1 000 UTF-8 bytes |
-| In-place text update | ≤ 2 000 characters |
+| In-place text update | ≤ 1000 bytes |
 
 Images larger than a single container are tiled automatically.  
 Every page must have exactly one event-capturing text/list container; the gateway inserts one automatically when needed.
@@ -411,6 +411,8 @@ mentraos/              BLE communication library (ported from G2.kt)
       onboarding.py    Onboarding skip
       even_ai.py       Hey Even toggle
       menu.py          Dashboard menu (passive only)
+      calendar.py      Calendar service init builder
+      dashboard.py     Dashboard display settings builder
   LICENSES/
     MentraOS_LICENSE   Original MentraOS licence
     NOTICE.md          Attribution notice
