@@ -85,6 +85,14 @@ Additional options:
 
 On first run the gateway scans for a G2 pair, connects, runs the initialisation sequence, and saves the discovered addresses to `config/gateway.yaml` for fast reconnect on subsequent launches.
 
+### Bluetooth preparation and recovery notes
+
+- Before starting, make sure the glasses are disconnected from the smartphone side: power off the smartphone, turn Bluetooth fully off, and force-close Even app / MentraOS. If the glasses are still connected to the phone, advertising may not start and the gateway may not detect them.
+- You do **not** need to remove the smartphone-side pairing.
+- If the PC and glasses show a pairing request dialog, accept the pairing. Otherwise the connection may be dropped after some time.
+- When you want to use the smartphone app again, stop the gateway server, re-enable Bluetooth on the smartphone, and relaunch the app. In some cases you may also need to turn off Bluetooth on the PC or power-cycle the PC once.
+- If operation is unstable, try restarting the gateway server, restarting the PC, and restarting the glasses (tap both touch panels 5 times in a row).
+
 ### 2. Open the browser UI
 
 Navigate to `http://127.0.0.1:8765` for the built-in status and test interface.
