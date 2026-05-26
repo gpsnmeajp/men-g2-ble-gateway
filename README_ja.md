@@ -332,6 +332,62 @@ python example_character_game.py
 
 ---
 
+### `example_pcm_record.py` — マイク録音
+
+タップで録音の開始・停止を切り替えます。デコードされた音声は `recordings/` に WAV ファイルとして保存されます。
+
+**操作方法：**
+
+| ジェスチャー | 動作 |
+|---|---|
+| シングルタップ | 録音開始 |
+| シングルタップ | 録音停止・保存 |
+
+**出力:** `recordings/rec_<timestamp>.wav` — 16 kHz・符号付き 16-bit リトルエンディアン・モノラル PCM
+
+**前提条件：** ゲートウェイサーバーが起動していること（`python gateway_server.py`）
+
+**LC3 コーデックのセットアップ（liblc3 サブモジュール）：**
+
+Even G2 は LC3 コーデックで圧縮した音声を送信します。  
+初回のみ、以下の手順でネイティブ共有ライブラリをビルドしてください。
+
+**Windows（MSYS2 + MinGW-w64）:**
+
+```powershell
+# MSYS2 MinGW64 シェルで GCC をインストール（初回のみ）:
+#   pacman -S mingw-w64-x86_64-gcc
+
+$root = "D:/men-g2-ble-gateway/liblc3"   # パスを適宜変更
+C:\msys64\usr\bin\bash.exe -c "
+  gcc -O3 -std=c11 -shared -fPIC \
+    -I$root/include $root/src/*.c \
+    -o $root/liblc3.dll -lm"
+```
+
+出力ファイル: `liblc3\liblc3.dll`
+
+**Linux:**
+
+```bash
+cd liblc3
+gcc -O3 -std=c11 -shared -fPIC -Iinclude src/*.c -o liblc3.so -lm
+```
+
+**macOS:**
+
+```bash
+cd liblc3
+gcc -O3 -std=c11 -shared -fPIC -Iinclude src/*.c -o liblc3.dylib -lm
+# Apple clang でも可。gcc を clang に置き換えてください
+```
+
+```bash
+python example_pcm_record.py
+```
+
+---
+
 ## プロジェクト構成
 
 ```
@@ -361,6 +417,7 @@ gateway_config.py           YAML 設定の読み書き
 gateway_server.py           aiohttp サーバー + Tk GUI エントリポイント
 gateway_cli.py              CLI クライアント
 example_character_game.py   キャラクターゲーム UI デモ
+example_pcm_record.py       タップ録音デモ（LC3 → WAV）
 config/gateway.yaml         ランタイム設定
 ui/                         静的ブラウザフロントエンド
 ```

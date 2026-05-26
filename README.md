@@ -332,6 +332,62 @@ If `icon.png` is not present, a simple face icon is generated automatically.
 
 ---
 
+### `example_pcm_record.py` — Microphone recording
+
+Tap to start / stop recording.  Decoded audio is saved as a WAV file in `recordings/`.
+
+**Controls:**
+
+| Gesture | Action |
+|---|---|
+| Single tap | Start recording |
+| Single tap | Stop recording and save |
+
+**Output:** `recordings/rec_<timestamp>.wav` — 16 kHz, signed 16-bit little-endian, mono PCM
+
+**Prerequisites:** gateway server running (`python gateway_server.py`)
+
+**LC3 codec setup (liblc3 submodule):**
+
+The Even G2 transmits audio compressed with the LC3 codec.  Build the native shared library
+once before running:
+
+**Windows (MSYS2 + MinGW-w64):**
+
+```powershell
+# Install GCC inside the MSYS2 MinGW64 shell (one-time):
+#   pacman -S mingw-w64-x86_64-gcc
+
+$root = "D:/men-g2-ble-gateway/liblc3"   # adjust to your path
+C:\msys64\usr\bin\bash.exe -c "
+  gcc -O3 -std=c11 -shared -fPIC \
+    -I$root/include $root/src/*.c \
+    -o $root/liblc3.dll -lm"
+```
+
+Expected output: `liblc3\liblc3.dll`
+
+**Linux:**
+
+```bash
+cd liblc3
+gcc -O3 -std=c11 -shared -fPIC -Iinclude src/*.c -o liblc3.so -lm
+```
+
+**macOS:**
+
+```bash
+cd liblc3
+gcc -O3 -std=c11 -shared -fPIC -Iinclude src/*.c -o liblc3.dylib -lm
+# Apple clang works too; replace gcc with clang
+```
+
+```bash
+python example_pcm_record.py
+```
+
+---
+
 ## Project structure
 
 ```
@@ -361,6 +417,7 @@ gateway_config.py           YAML config load / save
 gateway_server.py           aiohttp server + Tk GUI entry point
 gateway_cli.py              CLI client
 example_character_game.py   Character game UI demo
+example_pcm_record.py       Tap-to-record microphone demo (LC3 → WAV)
 config/gateway.yaml         Runtime configuration
 ui/                         Static browser frontend
 ```
