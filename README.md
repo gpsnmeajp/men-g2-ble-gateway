@@ -5,6 +5,9 @@
 A Python gateway that bridges [Even Realities G2](https://www.evenrealities.com/) smart glasses to HTTP, WebSocket, and a local browser UI.  
 The BLE communication layer is ported from the [MentraOS](https://github.com/Mentra-Community/MentraOS) `G2.kt` implementation.
 
+no cloud, no internet required.  
+offgrid, offline, Local completion processing.
+
 ![alt text](image.png)
 
 ---
