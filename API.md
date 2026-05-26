@@ -9,7 +9,8 @@ This document describes the HTTP and WebSocket interfaces currently implemented 
 - Default base URL: http://127.0.0.1:8765
 - Default WebSocket endpoint: /ws
 - Content type for HTTP request bodies: application/json
-- Authentication: none
+- Authentication: optional API key, disabled by default
+- CORS: optional, disabled by default
 - Response format: JSON for API endpoints
 
 The gateway exposes three kinds of interfaces:
@@ -57,9 +58,31 @@ When an HTTP request is rejected, the server returns JSON like this:
 Typical status codes:
 
 - 400 for validation or payload errors.
+- 401 for a missing or invalid API key when authentication is enabled.
 - 500 for runtime failures.
 
-### 2.3 Display and Text Rules
+### 2.3 Authentication
+
+When `auth.api_key` is set in YAML or `--api-key KEY` is supplied at startup, `/api/*` and the WebSocket endpoint require the same key. Static UI files remain public.
+
+HTTP clients may send either header:
+
+```http
+X-API-Key: <key>
+Authorization: Bearer <key>
+```
+
+Browser WebSocket clients cannot set arbitrary headers, so the server also accepts the configured query parameter, `api_key` by default:
+
+```text
+ws://127.0.0.1:8765/ws?api_key=<key>
+```
+
+### 2.4 CORS
+
+CORS is enabled only when `cors.enabled: true` is configured or `--cors-allow-origin` is supplied. Preflight `OPTIONS` requests are answered before API key checks so browser clients can use `X-API-Key` from allowed origins.
+
+### 2.5 Display and Text Rules
 
 The current implementation enforces these input rules:
 
@@ -72,7 +95,7 @@ The current implementation enforces these input rules:
 - If no text element sets capture_events, the first text element becomes the capture target automatically.
 - Large logical images may be split into internal tiles, but the final image container count must not exceed 4.
 
-### 2.4 WebSocket Delivery Behavior
+### 2.6 WebSocket Delivery Behavior
 
 - Every newly connected WebSocket client immediately receives one status.snapshot event.
 - Events are broadcast to all connected WebSocket clients.
@@ -164,6 +187,18 @@ The mode field is one of:
 - fast_text
 - layout
 - clear
+
+#### Differences from the Even Hub SDK
+
+This HTTP API targets the same G2 display features, but it does not mirror the Even Hub SDK method surface or payload format exactly.
+
+- Gateway clients always call POST /api/display. There are no separate public HTTP endpoints that directly correspond to createStartUpPageContainer, rebuildPageContainer, textContainerUpgrade, or updateImageRawData.
+- Layout payloads use an elements array plus snake_case keys such as border_width, border_color, border_radius, padding, container_name, and capture_events, instead of the SDK's camelCase TextContainerProperty or ImageContainerProperty field names.
+- container IDs are assigned internally by the gateway. Clients cannot provide containerID values or rely on stable IDs across unrelated layout rebuilds.
+- Only text and image elements are accepted by this API. SDK container types such as listObject and ListContainerProperty are not exposed here.
+- If no text element is marked as the capture target, the gateway promotes the first text element automatically. For image-only layouts, it injects an internal full-screen text capture container so gestures still have a receiver.
+- Initial text limits are enforced in UTF-8 bytes, not Unicode character count. Multibyte text may therefore hit the 1000-byte limit earlier than SDK examples that describe a 1000-character limit.
+- Large logical images may be split into multiple internal G2 image containers before transmission. The final internal image container count must still remain within the device limit.
 
 #### 3.2.1 Fast Text Request
 
@@ -356,6 +391,7 @@ Behavior:
 
 - GET /ws by default
 - The actual path is configurable through server.websocket_path in the YAML configuration.
+- If API key authentication is enabled, pass the key with `X-API-Key`, `Authorization: Bearer`, or the configured query parameter.
 
 ### 4.2 Initial Event
 
@@ -563,7 +599,7 @@ These are not JSON API endpoints, but they are served by the same process:
 
 ## 6. Implementation Notes and Current Limitations
 
-- The server does not implement authentication or authorization.
+- API key authentication and CORS are optional and disabled by default.
 - The current implementation rejects incoming text larger than 1000 UTF-8 bytes instead of using a placeholder-plus-upgrade fallback.
 - The WebSocket API is broadcast-only. Clients do not send commands over WebSocket.
 - Image rendering options gamma and dither are applied only to image/layout requests.

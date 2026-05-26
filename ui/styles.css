@@ -121,6 +121,8 @@ label {
 }
 
 textarea,
+input[type="password"],
+input[type="text"],
 input[type="number"],
 input[type="file"] {
   width: 100%;

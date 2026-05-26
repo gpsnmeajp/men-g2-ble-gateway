@@ -1,6 +1,42 @@
 const statusGrid = document.getElementById("statusGrid");
 const eventLog = document.getElementById("eventLog");
 const MAX_LOG_LINES = 200;
+const API_KEY_STORAGE_KEY = "g2GatewayApiKey";
+
+let websocketConnection = null;
+let reconnectTimer = null;
+
+function getApiKey() {
+  return window.localStorage.getItem(API_KEY_STORAGE_KEY) || "";
+}
+
+function authHeaders() {
+  const apiKey = getApiKey();
+  return apiKey ? { "X-API-Key": apiKey } : {};
+}
+
+function buildWebSocketUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  const apiKey = getApiKey();
+  if (apiKey) {
+    url.searchParams.set("api_key", apiKey);
+  }
+  return url.toString();
+}
+
+function resetWebSocket() {
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (websocketConnection !== null) {
+    const websocket = websocketConnection;
+    websocketConnection = null;
+    websocket.close();
+  }
+  connectWebSocket();
+}
 
 function setResult(id, message, isError = false) {
   const node = document.getElementById(id);
@@ -18,6 +54,30 @@ function appendEvent(event) {
   eventLog.textContent = lines.join("\n") + "\n";
   eventLog.scrollTop = eventLog.scrollHeight;
 }
+
+document.getElementById("apiKeyInput").value = getApiKey();
+
+document.getElementById("apiKeyForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  if (apiKey) {
+    window.localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+    setResult("apiKeyResult", "Saved.");
+  } else {
+    window.localStorage.removeItem(API_KEY_STORAGE_KEY);
+    setResult("apiKeyResult", "Cleared.");
+  }
+  fetchStatus().catch((error) => appendEvent({ kind: "system.error", data: { message: String(error) } }));
+  resetWebSocket();
+});
+
+document.getElementById("clearApiKeyButton").addEventListener("click", () => {
+  document.getElementById("apiKeyInput").value = "";
+  window.localStorage.removeItem(API_KEY_STORAGE_KEY);
+  setResult("apiKeyResult", "Cleared.");
+  fetchStatus().catch((error) => appendEvent({ kind: "system.error", data: { message: String(error) } }));
+  resetWebSocket();
+});
 
 async function withLoading(buttons, fn) {
   buttons.forEach((b) => { b.disabled = true; });
@@ -60,7 +120,7 @@ function renderStatus(payload) {
 }
 
 async function fetchStatus() {
-  const response = await fetch("/api/status");
+  const response = await fetch("/api/status", { headers: authHeaders() });
   if (!response.ok) {
     throw new Error(`status request failed: ${response.status}`);
   }
@@ -71,7 +131,7 @@ async function fetchStatus() {
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(payload),
   });
   const text = await response.text();
@@ -358,8 +418,13 @@ document.getElementById("clearLogButton").addEventListener("click", () => {
 });
 
 function connectWebSocket() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const websocket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  const websocket = new WebSocket(buildWebSocketUrl());
+  websocketConnection = websocket;
   websocket.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
@@ -373,7 +438,9 @@ function connectWebSocket() {
   };
   websocket.onclose = () => {
     appendEvent({ kind: "connection.state", data: { phase: "ws_closed" } });
-    window.setTimeout(connectWebSocket, 2000);
+    if (websocketConnection === websocket) {
+      reconnectTimer = window.setTimeout(connectWebSocket, 2000);
+    }
   };
 }
 

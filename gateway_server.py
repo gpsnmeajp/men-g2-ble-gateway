@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from contextlib import suppress
 import datetime
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -89,7 +90,11 @@ class GatewayServerApp:
         self._last_persisted_identity: Optional[tuple[str, str, str, str, str]] = None
 
         self._client = G2Client(self._build_g2_client_config(), event_handler=self._handle_client_event)
-        self._app = web.Application()
+        @web.middleware
+        async def security_middleware(request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
+            return await self._handle_security(request, handler)
+
+        self._app = web.Application(middlewares=[security_middleware])
         self._app.add_routes(
             [
                 web.post("/api/display", self.handle_display),
@@ -150,6 +155,100 @@ class GatewayServerApp:
                 await self._runner.cleanup()
             self._runner = None
         await self._client.stop()
+
+    async def _handle_security(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
+        """Apply CORS preflight handling and API key checks before route handlers."""
+
+        if request.method == "OPTIONS":
+            return self._apply_cors_headers(request, web.Response(status=204))
+
+        if not self._is_authorized_request(request):
+            response = web.json_response(
+                {"accepted": False, "error": "invalid or missing API key"},
+                status=401,
+            )
+            response.headers["WWW-Authenticate"] = 'Bearer realm="g2-gateway"'
+            return self._apply_cors_headers(request, response)
+
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            response = exc
+        if isinstance(response, web.WebSocketResponse):
+            return response
+        return self._apply_cors_headers(request, response)
+
+    def _is_authorized_request(self, request: web.Request) -> bool:
+        expected_api_key = self._config.auth.api_key
+        if not expected_api_key or not self._requires_api_key(request):
+            return True
+
+        provided_api_key = self._request_api_key(request)
+        return bool(provided_api_key) and hmac.compare_digest(
+            provided_api_key.encode("utf-8"),
+            expected_api_key.encode("utf-8"),
+        )
+
+    def _requires_api_key(self, request: web.Request) -> bool:
+        path = request.path
+        return path.startswith("/api/") or path == self._config.server.websocket_path
+
+    def _request_api_key(self, request: web.Request) -> str:
+        header_name = self._config.auth.header_name.strip() or "X-API-Key"
+        header_api_key = request.headers.get(header_name, "").strip()
+        if header_api_key:
+            return header_api_key
+
+        authorization = request.headers.get("Authorization", "").strip()
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token.strip():
+            return token.strip()
+
+        query_parameter = self._config.auth.query_parameter.strip()
+        if query_parameter:
+            return request.query.get(query_parameter, "").strip()
+        return ""
+
+    def _apply_cors_headers(self, request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+        origin_value = self._cors_origin_value(request)
+        if origin_value is None:
+            return response
+
+        response.headers["Access-Control-Allow-Origin"] = origin_value
+        response.headers["Access-Control-Allow-Methods"] = ", ".join(self._config.cors.allow_methods)
+        response.headers["Access-Control-Allow-Headers"] = ", ".join(self._config.cors.allow_headers)
+        if self._config.cors.allow_credentials:
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        if self._config.cors.max_age >= 0:
+            response.headers["Access-Control-Max-Age"] = str(self._config.cors.max_age)
+        if origin_value != "*":
+            self._append_vary_origin(response)
+        return response
+
+    def _cors_origin_value(self, request: web.Request) -> Optional[str]:
+        if not self._config.cors.enabled:
+            return None
+
+        origin = request.headers.get("Origin")
+        if not origin:
+            return None
+
+        allowed_origins = self._config.cors.allow_origins
+        if "*" in allowed_origins:
+            return origin if self._config.cors.allow_credentials else "*"
+        if origin in allowed_origins:
+            return origin
+        return None
+
+    @staticmethod
+    def _append_vary_origin(response: web.StreamResponse) -> None:
+        vary = response.headers.get("Vary", "")
+        if not vary:
+            response.headers["Vary"] = "Origin"
+            return
+        values = {value.strip().lower() for value in vary.split(",")}
+        if "origin" not in values:
+            response.headers["Vary"] = f"{vary}, Origin"
 
     async def handle_display(self, request: web.Request) -> web.Response:
         """display JSON を受け取り、G2Client へ渡す。"""
@@ -315,6 +414,8 @@ class GatewayServerApp:
                 "port": self._config.server.port,
                 "websocket_path": self._config.server.websocket_path,
                 "static_dir": self._config.server.static_dir,
+                "cors_enabled": bool(self._config.cors.enabled),
+                "auth_required": bool(self._config.auth.api_key),
             },
             "glasses": self._client.get_status(),
         }
@@ -578,6 +679,13 @@ class GatewayStatusWindow:
         self._labels["gesture"].set(glasses.get("last_gesture") or "-")
 
 
+def _split_cli_values(values: Optional[list[str]]) -> list[str]:
+    items: list[str] = []
+    for value in values or []:
+        items.extend(item.strip() for item in value.split(",") if item.strip())
+    return items
+
+
 def parse_args() -> argparse.Namespace:
     """gateway_server.py の CLI 引数を定義する。"""
 
@@ -596,6 +704,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug-raw-events", action="store_true", help="Emit glasses.raw_packet events")
     parser.add_argument("--image-gamma", type=float, default=1.0, help="Image gamma correction value (1.0 = no correction, <1.0 = brighter)")
     parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
+    parser.add_argument("--api-key", default=None, help="Require this API key for /api requests and WebSocket connections")
+    parser.add_argument(
+        "--cors-allow-origin",
+        action="append",
+        default=None,
+        help="Allow CORS requests from this origin. Repeat or use commas; use * to allow any origin.",
+    )
+    parser.add_argument("--cors-allow-credentials", action="store_true", help="Send Access-Control-Allow-Credentials: true")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     return parser.parse_args()
 
@@ -619,6 +735,14 @@ def load_config_from_args(args: argparse.Namespace) -> tuple[GatewayConfig, Gate
         config.glass.search_id = args.search_id
     if args.no_gui:
         config.gui.enabled = False
+    if args.api_key is not None:
+        config.auth.api_key = args.api_key
+    cors_allow_origins = _split_cli_values(args.cors_allow_origin)
+    if cors_allow_origins:
+        config.cors.enabled = True
+        config.cors.allow_origins = cors_allow_origins
+    if args.cors_allow_credentials:
+        config.cors.allow_credentials = True
     return config, config_store
 
 

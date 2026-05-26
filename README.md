@@ -17,6 +17,7 @@ The BLE communication layer is ported from the [MentraOS](https://github.com/Men
 - **Image rendering** — base64/data-URL images converted to 4-bit BMP, tiled within device constraints
 - **Microphone control** — enable/disable the glasses microphone; audio frames streamed over WebSocket
 - **WebSocket broadcast** — all normalised device events delivered to every connected client
+- **CORS and API key auth** — optional cross-origin access and shared-key protection for HTTP/WebSocket APIs
 - **Tk GUI** — live status window (connection phase, battery, mic, firmware, event log)
 - **Browser UI** — static HTML frontend served from the same process, including a layout composer for sending image + text together
 - **CLI** — scriptable command-line client for text, images, mic control, and event streaming
@@ -75,6 +76,9 @@ Additional options:
 | `--unpair-on-startup` | Attempt OS-level unpair of saved addresses at startup, then rescan |
 | `--image-gamma FLOAT` | Default gamma correction for all images (1.0 = none, <1.0 = brighter; default: `1.0`) |
 | `--image-dither` | Enable 4-bit Floyd-Steinberg dithering for all images |
+| `--api-key KEY` | Require this API key for `/api/*` and WebSocket clients |
+| `--cors-allow-origin ORIGIN` | Enable CORS for an origin; repeat or comma-separate values. Use `*` for any origin |
+| `--cors-allow-credentials` | Send `Access-Control-Allow-Credentials: true` with CORS responses |
 
 On first run the gateway scans for a G2 pair, connects, runs the initialisation sequence, and saves the discovered addresses to `config/gateway.yaml` for fast reconnect on subsequent launches.
 
@@ -116,11 +120,28 @@ ble:
 
 gui:
   enabled: true
+
+cors:
+  enabled: false
+  allow_origins: []      # e.g. ["http://localhost:5173"] or ["*"]
+  allow_methods: [GET, POST, OPTIONS]
+  allow_headers: [Content-Type, Authorization, X-API-Key]
+  allow_credentials: false
+  max_age: 600
+
+auth:
+  api_key: ""            # blank disables API key authentication
+  header_name: X-API-Key
+  query_parameter: api_key
 ```
 
 ---
 
 ## HTTP API
+
+For the full API reference see [API.md](API.md).
+
+If `auth.api_key` or `--api-key` is set, HTTP clients must send the key in either `X-API-Key: <key>` or `Authorization: Bearer <key>`. Browser WebSocket clients can use `?api_key=<key>`.
 
 ### `POST /api/display`
 
@@ -259,7 +280,7 @@ An initial `status.snapshot` event is sent on connection, followed by all device
 ## CLI
 
 ```bash
-python gateway_cli.py [--server URL] [--ws-path PATH] <command>
+python gateway_cli.py [--server URL] [--ws-path PATH] [--api-key KEY] <command>
 ```
 
 Default server: `http://127.0.0.1:8765`

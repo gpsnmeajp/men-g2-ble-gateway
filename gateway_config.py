@@ -32,6 +32,26 @@ def _coerce_mapping(value: Any) -> Mapping[str, Any]:
     return value
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError("config value must be a string or list of strings")
+
+
 @dataclass
 class ServerConfig:
     """HTTP/WebSocket/静的配信に関する設定。"""
@@ -121,6 +141,48 @@ class GuiConfig:
 
 
 @dataclass
+class CorsConfig:
+    """CORS settings for browser clients served from a different origin."""
+
+    enabled: bool = False
+    allow_origins: list[str] = field(default_factory=list)
+    allow_methods: list[str] = field(default_factory=lambda: ["GET", "POST", "OPTIONS"])
+    allow_headers: list[str] = field(default_factory=lambda: ["Content-Type", "Authorization", "X-API-Key"])
+    allow_credentials: bool = False
+    max_age: int = 600
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "CorsConfig":
+        defaults = cls()
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), defaults.enabled),
+            allow_origins=_coerce_string_list(data.get("allow_origins", defaults.allow_origins)),
+            allow_methods=_coerce_string_list(data.get("allow_methods", defaults.allow_methods)),
+            allow_headers=_coerce_string_list(data.get("allow_headers", defaults.allow_headers)),
+            allow_credentials=_coerce_bool(data.get("allow_credentials"), defaults.allow_credentials),
+            max_age=int(data.get("max_age", defaults.max_age)),
+        )
+
+
+@dataclass
+class AuthConfig:
+    """API key authentication settings."""
+
+    api_key: str = ""
+    header_name: str = "X-API-Key"
+    query_parameter: str = "api_key"
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "AuthConfig":
+        defaults = cls()
+        return cls(
+            api_key=str(data.get("api_key", defaults.api_key)),
+            header_name=str(data.get("header_name", defaults.header_name)),
+            query_parameter=str(data.get("query_parameter", defaults.query_parameter)),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """gateway.yaml 全体の型付き表現。"""
 
@@ -128,6 +190,8 @@ class GatewayConfig:
     glass: GlassConfig = field(default_factory=GlassConfig)
     ble: BleConfig = field(default_factory=BleConfig)
     gui: GuiConfig = field(default_factory=GuiConfig)
+    cors: CorsConfig = field(default_factory=CorsConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "GatewayConfig":
@@ -138,6 +202,8 @@ class GatewayConfig:
             glass=GlassConfig.from_mapping(_coerce_mapping(data.get("glass"))),
             ble=BleConfig.from_mapping(_coerce_mapping(data.get("ble"))),
             gui=GuiConfig.from_mapping(_coerce_mapping(data.get("gui"))),
+            cors=CorsConfig.from_mapping(_coerce_mapping(data.get("cors"))),
+            auth=AuthConfig.from_mapping(_coerce_mapping(data.get("auth"))),
         )
 
     def to_dict(self) -> MutableMapping[str, Any]:
@@ -206,7 +272,9 @@ def save_gateway_config(config: GatewayConfig, path: Optional[Path] = None) -> N
 
 
 __all__ = [
+    "AuthConfig",
     "BleConfig",
+    "CorsConfig",
     "DEFAULT_CONFIG_PATH",
     "GatewayConfig",
     "GatewayConfigStore",

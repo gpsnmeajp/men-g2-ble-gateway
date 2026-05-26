@@ -17,6 +17,7 @@ BLE 通信レイヤーは [MentraOS](https://github.com/Mentra-Community/MentraO
 - **画像レンダリング** — base64/data-URL 画像を 4-bit BMP へ変換し、デバイス制約内でタイル分割
 - **マイク制御** — グラスのマイクを ON/OFF、音声フレームを WebSocket でストリーミング
 - **WebSocket ブロードキャスト** — 全正規化イベントを接続中の全クライアントへ配信
+- **CORS / API キー認証** — HTTP/WebSocket API のクロスオリジン利用と共有キー保護を任意で有効化
 - **Tk GUI** — 接続フェーズ・バッテリー・マイク・ファームウェア・イベントログのライブ表示
 - **ブラウザ UI** — 同一プロセスから配信される静的 HTML フロントエンド。画像とテキストをまとめて送れるレイアウト合成フォームを含む
 - **CLI** — テキスト・画像・マイク制御・イベント監視に対応したコマンドラインクライアント
@@ -75,6 +76,9 @@ python gateway_server.py --no-gui
 | `--unpair-on-startup` | 保存済みアドレスを起動時に OS レベルでアンペアし、今回の実行では再スキャン |
 | `--image-gamma FLOAT` | 全画像に適用するデフォルトガンマ補正（1.0 = なし、<1.0 = 明るい; 既定: `1.0`） |
 | `--image-dither` | 全画像に 4-bit Floyd-Steinberg ディザリングを有効化 |
+| `--api-key KEY` | `/api/*` と WebSocket クライアントに API キーを必須化 |
+| `--cors-allow-origin ORIGIN` | CORS を許可するオリジン。複数回指定またはカンマ区切り可。`*` ですべて許可 |
+| `--cors-allow-credentials` | CORS 応答に `Access-Control-Allow-Credentials: true` を付与 |
 
 初回起動時は G2 ペアをスキャンして接続し、初期化シーケンスを実行した後、発見したアドレスを `config/gateway.yaml` へ保存します。次回以降の起動では保存済みアドレスへ直接接続します。
 
@@ -116,11 +120,28 @@ ble:
 
 gui:
   enabled: true
+
+cors:
+  enabled: false
+  allow_origins: []      # 例: ["http://localhost:5173"] または ["*"]
+  allow_methods: [GET, POST, OPTIONS]
+  allow_headers: [Content-Type, Authorization, X-API-Key]
+  allow_credentials: false
+  max_age: 600
+
+auth:
+  api_key: ""            # 空文字なら API キー認証は無効
+  header_name: X-API-Key
+  query_parameter: api_key
 ```
 
 ---
 
 ## HTTP API
+
+完全な API リファレンスは [API.md](API.md) を参照してください。
+
+`auth.api_key` または `--api-key` を設定した場合、HTTP クライアントは `X-API-Key: <key>` または `Authorization: Bearer <key>` を送信してください。ブラウザの WebSocket クライアントでは `?api_key=<key>` を利用できます。
 
 ### `POST /api/display`
 
@@ -259,7 +280,7 @@ gui:
 ## CLI
 
 ```bash
-python gateway_cli.py [--server URL] [--ws-path PATH] <command>
+python gateway_cli.py [--server URL] [--ws-path PATH] [--api-key KEY] <command>
 ```
 
 既定サーバー: `http://127.0.0.1:8765`

@@ -21,6 +21,18 @@
       </div>
       <div class="stack">
         <div class="card">
+          <h2>API Key</h2>
+          <form id="apiKeyForm">
+            <label for="apiKeyInput">Key</label>
+            <input id="apiKeyInput" type="password" autocomplete="off">
+            <div class="button-row">
+              <button type="submit">Save</button>
+              <button id="clearApiKeyButton" type="button" class="secondary">Clear</button>
+            </div>
+          </form>
+          <p id="apiKeyResult" class="result"></p>
+        </div>
+        <div class="card">
           <h2>Touch Controls</h2>
           <div class="button-row touch-row">
             <button id="touchSwipeUp"   type="button" data-gesture="swipe_up">↑ Swipe Up</button>
