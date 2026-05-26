@@ -86,6 +86,7 @@ CORS is enabled only when `cors.enabled: true` is configured or `--cors-allow-or
 
 The current implementation enforces these input rules:
 
+- The device display canvas is 576 pixels wide by 288 pixels high.
 - Any incoming text field must be 1000 bytes or fewer after UTF-8 encoding.
 - Empty text is not sent to the glasses as an empty string. It is normalized to a single space character.
 - If clear is true, it takes precedence over text or elements.
@@ -93,6 +94,8 @@ The current implementation enforces these input rules:
 - If a layout contains no text elements, the gateway injects a full-screen text capture container internally.
 - At most one text element may set capture_events to true.
 - If no text element sets capture_events, the first text element becomes the capture target automatically.
+- Final internal page limits are 12 containers total, with at most 8 text containers and 4 image containers.
+- Container names, when present, must be 16 characters or fewer.
 - Large logical images may be split into internal tiles, but the final image container count must not exceed 4.
 
 ### 2.6 WebSocket Delivery Behavior
@@ -270,26 +273,36 @@ Use this form for positioned text, images, or mixed content.
 }
 ```
 
+To render a visible border, set border_width to a value greater than 0. If border_color is omitted, the gateway falls back to 0.
+
 Top-level optional fields:
 
-- gamma: image gamma correction factor. 1.0 means no correction.
+- gamma: image gamma correction factor. 1.0 means no correction. The current implementation accepts any value that Python float() can parse; no explicit min/max clamp is applied by the server.
 - dither: if true, 4-bit Floyd-Steinberg dithering is applied to image rendering.
 
 Text element fields:
 
 - type: must be text.
 - text: string, required.
-- x, y, width, height: integer layout bounds.
-- border_width, border_color, border_radius: optional integers.
-- padding: optional integer.
-- capture_events: optional boolean.
-- container_name: optional string.
+- x: integer horizontal offset. The intended device canvas range is 0-576; the current gateway does not clamp this value before send.
+- y: integer vertical offset. The intended device canvas range is 0-288; the current gateway does not clamp this value before send.
+- width: integer container width. The underlying Even Hub text container convention is 0-576 pixels; the current gateway forwards the supplied value as-is and does not clamp it before send.
+- height: integer container height. The underlying Even Hub text container convention is 0-288 pixels; the current gateway forwards the supplied value as-is and does not clamp it before send.
+- border_width: optional integer, expected range 0-5.
+- border_color: optional integer, expected range 0-15.
+- border_radius: optional integer, expected range 0-10.
+- padding: optional integer, expected range 0-32.
+- capture_events: optional boolean. At most one text element may be true.
+- container_name: optional string, maximum 16 characters. If omitted, the gateway generates a name automatically.
 
 Image element fields:
 
 - type: must be image.
 - image_base64: required string, either raw Base64 or a data URL.
-- x, y, width, height: required integers.
+- x: required integer horizontal offset. The intended device canvas range is 0-576; the current gateway does not clamp this value before send.
+- y: required integer vertical offset. The intended device canvas range is 0-288; the current gateway does not clamp this value before send.
+- width: required integer logical image width. Each internal image tile must end up between 20 and 288 pixels wide after splitting.
+- height: required integer logical image height. Each internal image tile must end up between 20 and 144 pixels high after splitting.
 
 Validation and normalization rules:
 
@@ -297,9 +310,21 @@ Validation and normalization rules:
 - At most one text element may set capture_events to true.
 - If no text elements exist, the gateway injects an internal full-screen capture text container with a single-space payload.
 - If text elements exist and none has capture_events=true, the first text element becomes the capture target.
+- Text element count must be 8 or fewer.
 - Each text field must be 1000 UTF-8 bytes or fewer.
+- Explicit container_name values must be unique within the page and 16 characters or fewer.
+- The final internal page container count must be 12 or fewer.
 - Image tiles must fit within internal G2 image container constraints after splitting.
 - If the generated internal image tile count exceeds 4, the request is rejected.
+
+Practical tips and unsupported styling:
+
+- There is no z_index or z-index field in this API. The underlying platform does not provide explicit z-index control.
+- For mixed layouts, do not rely on element array order as a stable layering contract. Text and image containers are transmitted through different internal steps, so overlap behavior is ultimately device- and firmware-dependent.
+- Emoji and other glyphs outside the firmware font are not reliable. Unicode is supported only within the built-in font set, and unsupported characters may be silently skipped.
+- There is no text alignment control. Text is rendered left-aligned.
+- There is no font selection, font size control, bold, or italic styling.
+- There is no background_color, fill, or solid background property for text containers. Unpainted areas remain transparent/off.
 
 #### 3.2.4 Single-Image Shorthand
 
@@ -318,6 +343,7 @@ Instead of elements, the server also accepts a shorthand single-image request:
 ```
 
 This is internally converted into a one-element layout request.
+The same x/y/width/height and gamma/dither rules described above for image layout elements apply here.
 
 ### 3.3 POST /api/mic
 

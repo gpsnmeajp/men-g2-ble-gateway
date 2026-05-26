@@ -36,6 +36,11 @@ import aiohttp
 from PIL import Image, ImageDraw
 from pathlib import Path
 
+if hasattr(Image, "Resampling"):
+    LANCZOS_RESAMPLE = Image.Resampling.LANCZOS
+else:
+    LANCZOS_RESAMPLE = getattr(Image, "LANCZOS")
+
 # ─── Gateway endpoints ─────────────────────────────────
 GATEWAY_HTTP = "http://127.0.0.1:8765"
 GATEWAY_WS   = "ws://127.0.0.1:8765/ws"
@@ -74,7 +79,7 @@ ICON_PATH = Path("icon.png")
 def _load_icon_from_file(path: Path) -> str:
     """Load an image file, resize to IMG_W×IMG_H, and return as Base64 PNG."""
     with Image.open(path) as src:
-        img = src.convert("L").resize((IMG_W, IMG_H), Image.LANCZOS)
+        img = src.convert("L").resize((IMG_W, IMG_H), LANCZOS_RESAMPLE)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
@@ -145,6 +150,8 @@ def build_layout(icon_b64: str, cursor: int) -> dict:
                 "y":              DLG_Y,
                 "width":          DLG_W,
                 "height":         DLG_H,
+                "border_width":   1,
+                "border_color":   15,
                 "padding":        4,
                 "container_name": "dialogue",
                 "capture_events": False,
@@ -157,6 +164,8 @@ def build_layout(icon_b64: str, cursor: int) -> dict:
                 "y":              CHO_Y,
                 "width":          CHO_W,
                 "height":         CHO_H,
+                "border_width":   1,
+                "border_color":   15,
                 "padding":        6,
                 "container_name": "choices",
                 "capture_events": True,   # this container receives touch/swipe events
