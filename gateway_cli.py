@@ -81,34 +81,34 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Even G2 gateway CLI")
     parser.add_argument("--server", default="http://127.0.0.1:8765", help="gateway base URL")
-    parser.add_argument("--ws-path", default="/ws", help="WebSocket パス")
+    parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    send_text_parser = subparsers.add_parser("send-text", help="テキストを送信する")
-    send_text_parser.add_argument("--text", required=True, help="送信テキスト")
+    send_text_parser = subparsers.add_parser("send-text", help="Send text")
+    send_text_parser.add_argument("--text", required=True, help="Text to send")
 
-    send_image_parser = subparsers.add_parser("send-image", help="画像ファイルを送信する")
-    send_image_parser.add_argument("--file", required=True, help="画像ファイルパス")
+    send_image_parser = subparsers.add_parser("send-image", help="Send an image file")
+    send_image_parser.add_argument("--file", required=True, help="Image file path")
     send_image_parser.add_argument("--x", type=int, default=0)
     send_image_parser.add_argument("--y", type=int, default=0)
     send_image_parser.add_argument("--width", type=int, default=200)
     send_image_parser.add_argument("--height", type=int, default=100)
-    send_image_parser.add_argument("--image-gamma", type=float, default=None, help="ガンマ補正値 (1.0 = 無補正)")
-    send_image_parser.add_argument("--image-dither", action="store_true", help="4bit Floyd-Steinberg ディザリング")
+    send_image_parser.add_argument("--image-gamma", type=float, default=None, help="Gamma correction value (1.0 = no correction)")
+    send_image_parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
 
-    send_json_parser = subparsers.add_parser("send-json", help="display JSON をそのまま送る")
-    send_json_parser.add_argument("--file", required=True, help="JSON ファイルパス")
-    send_json_parser.add_argument("--image-gamma", type=float, default=None, help="ガンマ補正値 (1.0 = 無補正)")
-    send_json_parser.add_argument("--image-dither", action="store_true", help="4bit Floyd-Steinberg ディザリング")
+    send_json_parser = subparsers.add_parser("send-json", help="Send display JSON as-is")
+    send_json_parser.add_argument("--file", required=True, help="JSON file path")
+    send_json_parser.add_argument("--image-gamma", type=float, default=None, help="Gamma correction value (1.0 = no correction)")
+    send_json_parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
 
-    mic_parser = subparsers.add_parser("mic", help="マイクを ON/OFF する")
+    mic_parser = subparsers.add_parser("mic", help="Turn the microphone on or off")
     mic_group = mic_parser.add_mutually_exclusive_group(required=True)
     mic_group.add_argument("--on", action="store_true")
     mic_group.add_argument("--off", action="store_true")
 
-    subparsers.add_parser("events", help="WebSocket イベントを表示し続ける")
-    subparsers.add_parser("status", help="状態を表示する")
+    subparsers.add_parser("events", help="Stream WebSocket events")
+    subparsers.add_parser("status", help="Show status")
     return parser.parse_args()
 
 

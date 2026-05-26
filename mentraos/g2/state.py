@@ -52,6 +52,7 @@ class PageState:
     text_container_id: int = 1
     current_text_content: str = ""
     last_display_request: Optional[Dict[str, Any]] = None
+    current_layout_structure: Optional[Any] = None
 
     def reset_runtime_flags(self) -> None:
         """切断や system exit 後にページ所有状態だけを落とす。"""
@@ -61,6 +62,7 @@ class PageState:
         self.page_has_text_container = False
         self.page_has_fullscreen_text_container = False
         self.current_text_content = ""
+        self.current_layout_structure = None
 
 
 @dataclass
@@ -80,6 +82,8 @@ class ClientState:
     firmware_version: str = ""
     last_error: str = ""
     last_gesture: str = ""
+    display_surface: str = "unknown"
+    pairing_warning: str = ""
     left: LensState = field(default_factory=lambda: LensState(side="left"))
     right: LensState = field(default_factory=lambda: LensState(side="right"))
     page: PageState = field(default_factory=PageState)
@@ -101,6 +105,9 @@ class ClientState:
             "firmware_version": self.firmware_version,
             "last_error": self.last_error,
             "last_gesture": self.last_gesture,
+            "display_surface": self.display_surface,
+            "dashboard_visible": self.display_surface == "dashboard",
+            "pairing_warning": self.pairing_warning,
             "left": self.left.to_dict(),
             "right": self.right.to_dict(),
             "page": {

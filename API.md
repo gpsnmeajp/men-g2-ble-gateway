@@ -540,7 +540,8 @@ Emitted when the connection loop or runtime logic encounters an error.
 
 #### system.reinitialize
 
-Emitted when the gateway rebuilds its runtime page state after a page shutdown or system exit.
+Emitted when the gateway rebuilds its runtime page state after a page shutdown.
+System exit and abnormal exit trigger this event only when `ENABLE_SYSTEM_EXIT_RUNTIME_RESET` is enabled in code.
 The existing BLE connection is kept; this event does not imply a BLE reconnect.
 
 ```json

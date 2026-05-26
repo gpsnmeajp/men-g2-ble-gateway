@@ -1,7 +1,6 @@
 """DevSettings サービス向け protobuf builder。"""
 
 from datetime import datetime
-import math
 from typing import Optional
 
 from ..constants import DevCfgCommandId
@@ -49,12 +48,15 @@ def time_sync(
     """
 
     now = datetime.now().astimezone()
+    offset = now.utcoffset()
+    offset_seconds = 0 if offset is None else int(offset.total_seconds())
     if timestamp_seconds is None:
-        timestamp_seconds = int(now.timestamp())
+        # G2 の dashboard clock は timestamp を UTC epoch として再解釈せず、
+        # 壁時計秒として使う挙動があるため、ローカル時刻へ補正して送る。
+        timestamp_seconds = int(now.timestamp()) + offset_seconds
     if timezone_offset_hours is None:
-        offset = now.utcoffset()
-        total_seconds = 0 if offset is None else offset.total_seconds()
-        timezone_offset_hours = math.trunc(total_seconds / 3600)
+        # timestamp 側に offset を畳み込んでいるので、端末側の二重補正を避ける。
+        timezone_offset_hours = 0
 
     writer = ProtobufWriter()
     writer.write_int32_field(1, int(DevCfgCommandId.TIME_SYNC))

@@ -16,9 +16,19 @@ try:
 except ImportError:  # pragma: no cover - 未導入環境でも import は通す。
     BleakClient = None
 
-from .constants import AUDIO_NOTIFY, CHAR_NOTIFY, CHAR_WRITE, INITIAL_TEXT_MAX_BYTES, SCREEN_HEIGHT, SCREEN_WIDTH, ServiceID
+from .constants import (
+    AUDIO_NOTIFY,
+    CHAR_NOTIFY,
+    CHAR_WRITE,
+    ENABLE_POST_IMAGE_TEXT_REDRAW,
+    ENABLE_SYSTEM_EXIT_RUNTIME_RESET,
+    INITIAL_TEXT_MAX_BYTES,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    ServiceID,
+)
 from .events import EventFactory, parse_dev_settings_response, parse_even_hub_response, parse_g2_setting_response
-from .protocol import calendar, dashboard, dev_settings, even_ai, even_hub, g2_setting, onboarding
+from .protocol import calendar, dashboard, dev_settings, even_ai, even_hub, g2_setting, menu, onboarding
 from .render import decode_base64_image, render_image_tiles
 from .scan import G2DiscoveredDevice, G2DiscoveredPair, discover_g2_pair
 from .state import ClientState, ConnectionPhase
@@ -27,8 +37,27 @@ from .transport import G2ReceiveManager, G2SendManager
 
 LOGGER = logging.getLogger(__name__)
 LAST_ERROR_CLEAR_DELAY_SEC = 15.0
+LAUNCH_MENU_PACKAGE_NAME = "men-g2-ble-gateway.launch"
+LAUNCH_MENU_NAME = "Launch"
+DISPLAY_SURFACE_UNKNOWN = "unknown"
+DISPLAY_SURFACE_APP = "app"
+DISPLAY_SURFACE_DASHBOARD = "dashboard"
+PAIRING_WARNING_MESSAGE = "Pair the glasses from the OS Bluetooth settings (communication may be unstable)"
+PAIRING_ERROR_HINTS = (
+    "pair",
+    "paired",
+    "pairing",
+    "bond",
+    "bonded",
+    "authentication",
+    "authenticate",
+    "not authorized",
+    "access denied",
+    "\u672a\u30da\u30a2",
+    "\u30da\u30a2\u30ea\u30f3\u30b0",
+)
 
-EventHandler = Callable[[Dict[str, Any]], Awaitable[None] | None]
+EventHandler = Callable[[Dict[str, Any]], Optional[Awaitable[None]]]
 
 
 @dataclass(frozen=True)
@@ -97,6 +126,7 @@ class G2Client:
         self._heartbeat_counter = 0
         self._image_session_counter = 0
         self._last_audio_frame: Optional[bytes] = None
+        self._launch_menu_app_id = menu.package_name_to_app_id(LAUNCH_MENU_PACKAGE_NAME)
 
         self._heartbeat_task: Optional[asyncio.Task[None]] = None
         self._dev_settings_heartbeat_task: Optional[asyncio.Task[None]] = None
@@ -126,6 +156,59 @@ class G2Client:
             raise RuntimeError("bleak is required for BLE connections")
         return BleakClient
 
+    def _create_bleak_client(
+        self,
+        target: Any,
+        side: str,
+        generation: int,
+        side_generation: int,
+    ) -> Any:
+        """未ペア時は接続前に OS ペアリングを試みる BleakClient を作る。"""
+
+        bleak_client_class = self._require_bleak_client()
+        return bleak_client_class(
+            target,
+            disconnected_callback=self._make_disconnect_callback(side, generation, side_generation),
+            pair=True,
+        )
+
+    def _update_pairing_warning_from_error(self, exc: Any) -> None:
+        message = str(exc).lower()
+        if any(hint in message for hint in PAIRING_ERROR_HINTS):
+            self._state.pairing_warning = PAIRING_WARNING_MESSAGE
+
+    def _clear_pairing_warning(self) -> None:
+        self._state.pairing_warning = ""
+
+    def _mark_dashboard_surface(self, reason: str) -> bool:
+        changed = self._state.display_surface != DISPLAY_SURFACE_DASHBOARD
+        if changed:
+            LOGGER.info("G2 display surface changed to dashboard: %s", reason)
+        self._pending_text_msg = None
+        self._last_even_hub_resends_remaining = 0
+        self._state.display_surface = DISPLAY_SURFACE_DASHBOARD
+        self._state.page.reset_runtime_flags()
+        self._state.mic_enabled = False
+        return changed
+
+    def _mark_app_surface(self) -> None:
+        self._state.display_surface = DISPLAY_SURFACE_APP
+
+    def _force_rebuild_if_dashboard_visible(self) -> bool:
+        if self._state.display_surface != DISPLAY_SURFACE_DASHBOARD:
+            return False
+        self._pending_text_msg = None
+        self._last_even_hub_resends_remaining = 0
+        self._state.page.reset_runtime_flags()
+        self._state.display_surface = DISPLAY_SURFACE_APP
+        return True
+
+    def _track_display_surface_from_gesture(self, gesture: str) -> None:
+        if gesture in ("foreground_exit", "system_exit", "abnormal_exit"):
+            self._mark_dashboard_surface(gesture)
+        elif gesture == "foreground_enter":
+            self._mark_app_surface()
+
     async def stop(self) -> None:
         """全タスクと BLE 接続を停止する。"""
 
@@ -143,6 +226,7 @@ class G2Client:
                 await self._runner_task
         self._state.phase = ConnectionPhase.STOPPED
         self._state.ready = False
+        self._state.display_surface = DISPLAY_SURFACE_UNKNOWN
         await self._emit_connection_state()
         await self._emit_status_snapshot()
 
@@ -171,6 +255,7 @@ class G2Client:
         """ページ所有権を維持したまま空表示へ戻す。"""
 
         async with self._display_lock:
+            self._force_rebuild_if_dashboard_visible()
             self._state.page.last_display_request = None
             await self._ensure_startup_page(" ")
             if self._state.page.page_created and self._state.page.page_has_text_container:
@@ -281,6 +366,7 @@ class G2Client:
                     LOGGER.exception("G2 connection loop failed")
                 await self._cancel_last_error_clear_task()
                 self._state.last_error = message
+                self._update_pairing_warning_from_error(exc)
                 await self._cleanup_after_connection_failure()
                 await self._emit("system.error", {"message": message})
                 await self._set_phase(ConnectionPhase.RECOVERING)
@@ -298,6 +384,7 @@ class G2Client:
         await self._run_init_sequence()
         self._ensure_current_connection(generation, "initialization")
         self._state.ready = True
+        self._clear_pairing_warning()
         await self._start_background_tasks(generation)
         await self._set_phase(ConnectionPhase.READY)
         await self._restore_runtime_state()
@@ -342,7 +429,6 @@ class G2Client:
     async def _connect_pair(self, pair: G2DiscoveredPair) -> int:
         """左右両方へ接続し、notify/audio notify を有効化する。"""
 
-        bleak_client_class = self._require_bleak_client()
         self._connection_generation += 1
         generation = self._connection_generation
         self._disconnect_in_progress = False
@@ -351,13 +437,17 @@ class G2Client:
         self._side_generations["right"] += 1
         left_generation = self._side_generations["left"]
         right_generation = self._side_generations["right"]
-        left_client = bleak_client_class(
+        left_client = self._create_bleak_client(
             pair.left.bleak_device,
-            disconnected_callback=self._make_disconnect_callback("left", generation, left_generation),
+            "left",
+            generation,
+            left_generation,
         )
-        right_client = bleak_client_class(
+        right_client = self._create_bleak_client(
             pair.right.bleak_device,
-            disconnected_callback=self._make_disconnect_callback("right", generation, right_generation),
+            "right",
+            generation,
+            right_generation,
         )
         control_gap_sec = max(self._config.ble_packet_gap_ms / 1000, 0.05)
 
@@ -480,6 +570,9 @@ class G2Client:
         )
         await asyncio.sleep(0.2)
 
+        await self._send_launch_menu()
+        await asyncio.sleep(0.2)
+
         await self._ensure_startup_page(" ")
         await asyncio.sleep(0.2)
         await self.request_device_info()
@@ -493,6 +586,25 @@ class G2Client:
         if self._state.target_mic_enabled:
             await self.set_mic_enabled(True)
 
+    async def _rebuild_display_from_launch_menu(self) -> None:
+        async with self._reinitialize_lock:
+            if not self._state.ready:
+                return
+            cached_display = copy.deepcopy(self._state.page.last_display_request)
+            self._pending_text_msg = None
+            self._last_even_hub_resends_remaining = 0
+            self._state.page.reset_runtime_flags()
+            self._mark_app_surface()
+            await self._emit(
+                "system.reinitialize",
+                {"reason": "dashboard_launch", "app_id": self._launch_menu_app_id},
+            )
+            await self._ensure_startup_page(" ")
+            if cached_display:
+                await self.display(cached_display, remember=False)
+            if self._state.target_mic_enabled:
+                await self.set_mic_enabled(True)
+
     async def _disconnect_clients(self) -> None:
         """現在保持している BleakClient をすべて切断する。"""
 
@@ -505,6 +617,7 @@ class G2Client:
         self._state.left.connected = False
         self._state.right.connected = False
         self._state.ready = False
+        self._state.display_surface = DISPLAY_SURFACE_UNKNOWN
 
     async def _disconnect_side_client(self, side: str) -> None:
         """片側だけの stale BleakClient を切断して state から外す。"""
@@ -560,6 +673,7 @@ class G2Client:
         await self._stop_background_tasks()
         await self._disconnect_clients()
         self._state.page.reset_runtime_flags()
+        self._state.display_surface = DISPLAY_SURFACE_UNKNOWN
         self._state.mic_enabled = False
         self._state.left.authenticated = False
         self._state.right.authenticated = False
@@ -664,6 +778,7 @@ class G2Client:
                     message = str(exc)
                     LOGGER.warning("G2 %s side reconnect failed: %s", side, message)
                     self._state.last_error = message
+                    self._update_pairing_warning_from_error(exc)
                     await self._emit("system.error", {"message": message, "side": side})
                     await self._emit_status_snapshot()
                     await asyncio.sleep(self._config.reconnect_interval_sec)
@@ -682,14 +797,15 @@ class G2Client:
         if not address:
             raise RuntimeError(f"cannot reconnect {side} G2 lens without saved address")
 
-        bleak_client_class = self._require_bleak_client()
         self._side_generations[side] += 1
         side_generation = self._side_generations[side]
         source_key = "L" if side == "left" else "R"
         control_gap_sec = max(self._config.ble_packet_gap_ms / 1000, 0.05)
-        client = bleak_client_class(
+        client = self._create_bleak_client(
             address,
-            disconnected_callback=self._make_disconnect_callback(side, generation, side_generation),
+            side,
+            generation,
+            side_generation,
         )
 
         try:
@@ -733,6 +849,7 @@ class G2Client:
             raise
         if self._is_side_connected("left") and self._is_side_connected("right"):
             self._state.ready = True
+            self._clear_pairing_warning()
             await self._set_phase(ConnectionPhase.READY)
             await self._restore_runtime_state()
         else:
@@ -777,6 +894,8 @@ class G2Client:
         await self._send_calendar_command(calendar.default_config_message(self._send_manager.next_magic_random()))
         await asyncio.sleep(0.2)
         await self._send_dashboard_command(dashboard.display_settings_message(self._send_manager.next_magic_random()))
+        await asyncio.sleep(0.2)
+        await self._send_launch_menu()
         await asyncio.sleep(0.2)
         await self._ensure_startup_page(" ")
         await asyncio.sleep(0.2)
@@ -883,11 +1002,14 @@ class G2Client:
         normalized_text = text if text else " "
         self._validate_text_size(normalized_text, "text")
         async with self._display_lock:
+            self._force_rebuild_if_dashboard_visible()
             # 重複排除: 既にフルスクリーンコンテナが存在し内容が同一なら BLE 送信をスキップ
             if (
                 self._state.page.page_has_fullscreen_text_container
                 and self._state.page.current_text_content == normalized_text
             ):
+                self._state.page.current_layout_structure = None
+                self._mark_app_surface()
                 if remember:
                     self._state.page.last_display_request = {"text": text}
                 return
@@ -900,6 +1022,7 @@ class G2Client:
                 )
                 self._queue_even_hub_command(message)
                 self._state.page.current_text_content = normalized_text
+            self._state.page.current_layout_structure = None
             if remember:
                 self._state.page.last_display_request = {"text": text}
             await self._emit_status_snapshot()
@@ -914,22 +1037,30 @@ class G2Client:
         """text/image レイアウトを rebuild して反映する。"""
 
         async with self._display_lock:
+            self._force_rebuild_if_dashboard_visible()
             # 重複排除: ページ構造が既に存在し request が完全一致なら BLE リビルドをスキップ
             new_elements = [dict(e) for e in elements]
+            new_structure = self._layout_structure_signature(new_elements, image_gamma, image_dither)
             has_user_text = any(str(element.get("type", "")).lower() == "text" for element in new_elements)
             if self._state.page.startup_page_created:
                 prev = self._state.page.last_display_request or {}
-                if (
-                    prev.get("elements") == new_elements
-                    and prev.get("gamma") == image_gamma
-                    and prev.get("dither") == image_dither
-                ):
+                text_update_messages = self._layout_text_update_messages_if_structure_matches(
+                    prev,
+                    new_elements,
+                    new_structure,
+                )
+                if text_update_messages is not None:
+                    for message in text_update_messages:
+                        await self._send_even_hub_command(message)
                     if remember:
                         self._state.page.last_display_request = {
                             "elements": new_elements,
                             "gamma": image_gamma,
                             "dither": image_dither,
                         }
+                    self._mark_app_surface()
+                    if text_update_messages:
+                        await self._emit_status_snapshot()
                     return
 
             text_specs, image_tiles = self._build_layout_specs(
@@ -973,14 +1104,16 @@ class G2Client:
                 and text_specs[0].height == SCREEN_HEIGHT
             )
             self._state.page.current_text_content = ""
+            self._state.page.current_layout_structure = new_structure
+            self._mark_app_surface()
 
             if image_tiles:
                 await asyncio.sleep(self._config.image_settle_delay_ms / 1000)
                 for tile in image_tiles:
                     await self._send_image_tile(tile)
-                if has_user_text:
-                    # 画像転送時に余白も含めて text 領域を上書きするため、
-                    # mixed layout では画像反映後に text を再描画する。
+                if ENABLE_POST_IMAGE_TEXT_REDRAW and has_user_text:
+                    # 既定では無効。mixed layout の連続送信時に、画像 raw-data
+                    # 転送後の追加 text update が page drop を誘発しうる。
                     for text_spec in text_specs:
                         if text_spec.content is None:
                             continue
@@ -1000,10 +1133,121 @@ class G2Client:
                 }
             await self._emit_status_snapshot()
 
+    def _layout_text_update_messages_if_structure_matches(
+        self,
+        prev: Mapping[str, Any],
+        new_elements: Sequence[Mapping[str, Any]],
+        new_structure: Tuple[Any, ...],
+    ) -> Optional[List[bytes]]:
+        if self._state.page.current_layout_structure != new_structure:
+            return None
+
+        prev_elements = prev.get("elements")
+        if not isinstance(prev_elements, list):
+            return None
+
+        prev_structure = self._layout_structure_signature(
+            prev_elements,
+            float(prev.get("gamma", self._config.image_gamma)),
+            bool(prev.get("dither", self._config.image_dither)),
+        )
+        if prev_structure != new_structure:
+            return None
+
+        prev_texts = self._layout_text_contents(prev_elements)
+        new_texts = self._layout_text_contents(new_elements)
+        if len(prev_texts) != len(new_texts):
+            return None
+
+        messages: List[bytes] = []
+        for index, (prev_text, new_text) in enumerate(zip(prev_texts, new_texts)):
+            self._validate_text_size(new_text, f"text element {index + 1}")
+            if prev_text == new_text:
+                continue
+            messages.append(
+                even_hub.update_text_message(
+                    container_id=index + 1,
+                    content_length=len(new_text.encode("utf-8")),
+                    content=new_text,
+                )
+            )
+        return messages
+
+    def _layout_structure_signature(
+        self,
+        elements: Sequence[Mapping[str, Any]],
+        image_gamma: float,
+        image_dither: bool,
+    ) -> Tuple[Any, ...]:
+        text_elements: List[Mapping[str, Any]] = []
+        image_elements: List[Mapping[str, Any]] = []
+        for element in elements:
+            element_type = str(element.get("type", "")).lower()
+            if element_type == "text":
+                text_elements.append(element)
+            elif element_type == "image":
+                image_elements.append(element)
+            else:
+                raise ValueError(f"unsupported element type: {element_type}")
+
+        capture_indices = [index for index, element in enumerate(text_elements) if element.get("capture_events")]
+        if len(capture_indices) > 1:
+            raise ValueError("at most one text element may have capture_events=true")
+
+        text_signature = []
+        for index, element in enumerate(text_elements):
+            if capture_indices:
+                capture = index == capture_indices[0]
+            else:
+                capture = index == 0
+            text_signature.append(
+                (
+                    int(element.get("x", 0)),
+                    int(element.get("y", 0)),
+                    int(element.get("width", SCREEN_WIDTH)),
+                    int(element.get("height", SCREEN_HEIGHT)),
+                    int(element.get("border_width", 0)),
+                    int(element.get("border_color", 0)),
+                    int(element.get("border_radius", 0)),
+                    int(element.get("padding", 0)),
+                    str(element.get("container_name") or f"text-{index + 1}"),
+                    capture,
+                )
+            )
+
+        image_signature = []
+        for element in image_elements:
+            image_signature.append(
+                (
+                    str(element.get("image_base64", "")),
+                    int(element.get("x", 0)),
+                    int(element.get("y", 0)),
+                    int(element.get("width", SCREEN_WIDTH)),
+                    int(element.get("height", SCREEN_HEIGHT)),
+                )
+            )
+
+        return (
+            image_gamma,
+            image_dither,
+            tuple(text_signature),
+            tuple(image_signature),
+        )
+
+    def _layout_text_contents(self, elements: Sequence[Mapping[str, Any]]) -> List[str]:
+        return [
+            str(element.get("text", "")) or " "
+            for element in elements
+            if str(element.get("type", "")).lower() == "text"
+        ]
+
     async def _ensure_startup_page(self, initial_text: str) -> None:
         """全画面テキストコンテナを持つ startup page を必要時に作る。"""
 
+        self._force_rebuild_if_dashboard_visible()
         if self._state.page.page_created and self._state.page.page_has_fullscreen_text_container:
+            self._state.page.current_layout_structure = None
+            self._mark_app_surface()
             return
         normalized_text = initial_text if initial_text else " "
         self._validate_text_size(normalized_text, "text")
@@ -1041,6 +1285,8 @@ class G2Client:
         self._state.page.page_has_text_container = True
         self._state.page.page_has_fullscreen_text_container = True
         self._state.page.current_text_content = normalized_text
+        self._state.page.current_layout_structure = None
+        self._mark_app_surface()
 
     def _extract_elements(self, request: Mapping[str, Any]) -> List[Mapping[str, Any]]:
         """elements 配列と単一 image shorthand を同じ形へ寄せる。"""
@@ -1223,6 +1469,33 @@ class G2Client:
 
         packets = self._send_manager.build_packets(
             service_id=int(ServiceID.CALENDAR),
+            payload=payload,
+            reserve_flag=True,
+        )
+        await self._send_packets(packets, left=False, right=True)
+
+    async def _send_launch_menu(self) -> None:
+        payload, app_id_map = menu.send_menu_info(
+            self._send_manager.next_magic_random(),
+            [
+                menu.MenuItem(
+                    package_name=LAUNCH_MENU_PACKAGE_NAME,
+                    name=LAUNCH_MENU_NAME,
+                    running=False,
+                )
+            ],
+        )
+        for app_id, package_name in app_id_map.items():
+            if package_name == LAUNCH_MENU_PACKAGE_NAME:
+                self._launch_menu_app_id = app_id
+                break
+        await self._send_menu_command(payload)
+
+    async def _send_menu_command(self, payload: bytes) -> None:
+        """Menu service へ payload を送る。"""
+
+        packets = self._send_manager.build_packets(
+            service_id=int(ServiceID.MENU),
             payload=payload,
             reserve_flag=True,
         )
@@ -1445,6 +1718,7 @@ class G2Client:
                 self._state.right.authenticated = False
                 self._state.page.reset_runtime_flags()
                 self._state.mic_enabled = False
+                self._state.display_surface = DISPLAY_SURFACE_UNKNOWN
 
             should_reconnect_side = self._is_side_connected(other_side)
             if not should_reconnect_side:
@@ -1479,6 +1753,7 @@ class G2Client:
             self._connection_generation += 1
             self._state.ready = False
             self._state.page.reset_runtime_flags()
+            self._state.display_surface = DISPLAY_SURFACE_UNKNOWN
             self._state.mic_enabled = False
             self._state.left.connected = False
             self._state.right.connected = False
@@ -1545,17 +1820,27 @@ class G2Client:
 
         parsed = parse_even_hub_response(payload)
         for event in parsed["events"]:
+            if event["kind"] == "glasses.touch":
+                self._track_display_surface_from_gesture(str(event["data"].get("gesture", "")))
             await self._emit(event["kind"], event["data"])
+
+        system_exit_surface_changed = False
+        if parsed.get("system_exit"):
+            system_exit_surface_changed = self._mark_dashboard_surface(
+                parsed.get("system_exit_reason") or "system_exit"
+            )
 
         menu_app_id = parsed.get("menu_app_id")
         if isinstance(menu_app_id, int):
             await self._emit("glasses.dashboard", {"action": "selected", "app_id": menu_app_id})
+            if menu_app_id == self._launch_menu_app_id:
+                await self._rebuild_display_from_launch_menu()
 
         runtime_reset_reason: Optional[str] = None
         if parsed.get("page_shutdown"):
             runtime_reset_reason = "page_shutdown"
 
-        if parsed.get("system_exit"):
+        if parsed.get("system_exit") and ENABLE_SYSTEM_EXIT_RUNTIME_RESET:
             runtime_reset_reason = parsed.get("system_exit_reason") or "system_exit"
             # ユーザーが手動停止した可能性が高いため、同一 BLE 接続内でもコンテンツを自動復元しない。
             self._state.page.last_display_request = None
@@ -1567,6 +1852,8 @@ class G2Client:
             # イベントを受信できている時点で BLE 接続自体は生きているため、
             # ここでは再接続せず、page/runtime 状態だけを同一接続上で戻す。
             await self._restore_runtime_after_page_reset(runtime_reset_reason)
+        elif system_exit_surface_changed:
+            await self._emit_status_snapshot()
 
     async def _handle_dev_settings_payload(self, payload: bytes, source_key: str) -> None:
         """DevSettings 応答を state とイベントへ反映する。"""

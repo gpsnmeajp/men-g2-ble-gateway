@@ -40,18 +40,19 @@ function renderStatus(payload) {
   const right = glasses.right || {};
 
   const rows = [
-    ["待受", `${server.host || "-"}:${server.port || "-"}`],
-    ["フェーズ", glasses.phase || "-"],
+    ["Server", `${server.host || "-"}:${server.port || "-"}`],
+    ["Phase", glasses.phase || "-"],
     ["Ready", glasses.ready ? "yes" : "no"],
-    ["シリアル", glasses.last_serial_number || "-"],
-    ["左アドレス", left.address || "-"],
-    ["右アドレス", right.address || "-"],
-    ["マイク", `現在 ${glasses.mic_enabled ? "on" : "off"} / 目標 ${glasses.target_mic_enabled ? "on" : "off"}`],
-    ["バッテリー", glasses.battery_level >= 0 ? `${glasses.battery_level}%` : "-"],
-    ["充電", glasses.charging ? "yes" : "no"],
+    ["Serial", glasses.last_serial_number || "-"],
+    ["Left Address", left.address || "-"],
+    ["Right Address", right.address || "-"],
+    ["Microphone", `Current: ${glasses.mic_enabled ? "on" : "off"} / Target: ${glasses.target_mic_enabled ? "on" : "off"}`],
+    ["Battery", glasses.battery_level >= 0 ? `${glasses.battery_level}%` : "-"],
+    ["Charging", glasses.charging ? "yes" : "no"],
     ["Firmware", glasses.firmware_version || "-"],
-    ["エラー", glasses.last_error || "-"],
-    ["ジェスチャー", glasses.last_gesture || "-"],
+    ["Error", glasses.last_error || "-"],
+    ["Pairing", glasses.pairing_warning || "-"],
+    ["Gesture", glasses.last_gesture || "-"],
   ];
 
   statusGrid.innerHTML = rows.map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join("");
@@ -110,7 +111,7 @@ document.getElementById("textForm").addEventListener("submit", async (event) => 
   event.preventDefault();
   const text = document.getElementById("textInput").value.trim();
   if (!text) {
-    setResult("textResult", "テキストを入力してください。", true);
+    setResult("textResult", "Please enter text.", true);
     return;
   }
   const btn = event.target.querySelector('button[type="submit"]');
@@ -197,7 +198,7 @@ function buildProcessedCanvas(file, targetWidth, targetHeight, keepAspect, gamma
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("画像の読み込みに失敗しました。"));
+      reject(new Error("Failed to load the image."));
     };
     img.src = url;
   });
@@ -257,7 +258,7 @@ async function buildLayoutPayloadFromForm() {
   }
 
   if (!elements.length) {
-    throw new Error("テキストまたは画像を入力してください。");
+    throw new Error("Please enter text or choose an image.");
   }
 
   return { elements };
@@ -296,7 +297,7 @@ document.getElementById("jsonPayload").addEventListener("input", (event) => {
     JSON.parse(event.target.value);
     event.target.setCustomValidity("");
   } catch {
-    event.target.setCustomValidity("無効なJSONです");
+    event.target.setCustomValidity("Invalid JSON.");
   }
 });
 

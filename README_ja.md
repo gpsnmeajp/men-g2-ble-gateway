@@ -69,6 +69,10 @@ python gateway_server.py --no-gui
 | `--no-gui` | Tk ステータスウィンドウを起動しない |
 | `--debug-raw-events` | `glasses.raw_packet` イベントを WebSocket へ含める |
 | `--log-level LEVEL` | Python ロギングレベル（既定: `INFO`） |
+| `--clear-saved-addresses` | 保存済みグラスアドレスを起動時に消去して再スキャン |
+| `--unpair-on-startup` | 保存済みアドレスを起動時に OS レベルでアンペアし、今回の実行では再スキャン |
+| `--image-gamma FLOAT` | 全画像に適用するデフォルトガンマ補正（1.0 = なし、<1.0 = 明るい; 既定: `1.0`） |
+| `--image-dither` | 全画像に 4-bit Floyd-Steinberg ディザリングを有効化 |
 
 初回起動時は G2 ペアをスキャンして接続し、初期化シーケンスを実行した後、発見したアドレスを `config/gateway.yaml` へ保存します。次回以降の起動では保存済みアドレスへ直接接続します。
 
@@ -106,6 +110,7 @@ ble:
   text_queue_interval_ms: 100
   image_settle_delay_ms: 1000
   image_fragment_interval_ms: 200
+  unpair_on_startup: false
 
 gui:
   enabled: true
@@ -169,6 +174,24 @@ gui:
 
 ---
 
+### `POST /api/touch`
+
+タッチジェスチャーイベントを合成し、接続中の全 WebSocket クライアントへブロードキャストします。
+
+`gesture` の有効値: `single_tap`、`double_tap`、`swipe_up`、`swipe_down`
+
+```json
+{ "gesture": "single_tap" }
+```
+
+レスポンス:
+
+```json
+{ "accepted": true, "gesture": "single_tap" }
+```
+
+---
+
 ### `GET /api/status`
 
 サーバーとグラスの現在状態を返します:
@@ -179,12 +202,18 @@ gui:
   "glasses": {
     "phase": "ready",
     "ready": true,
+    "last_serial_number": "G2_...",
     "mic_enabled": false,
+    "target_mic_enabled": false,
     "battery_level": 85,
     "charging": false,
     "firmware_version": "...",
-    "left": { "address": "...", "connected": true, "authenticated": true },
-    "right": { "address": "...", "connected": true, "authenticated": true }
+    "last_error": "",
+    "last_gesture": "single_tap",
+    "display_surface": "app",
+    "pairing_warning": "",
+    "left": { "address": "...", "mac_address": "...", "connected": true, "authenticated": true },
+    "right": { "address": "...", "mac_address": "...", "connected": true, "authenticated": true }
   }
 }
 ```
@@ -236,8 +265,8 @@ python gateway_cli.py [--server URL] [--ws-path PATH] <command>
 | コマンド | 説明 |
 |---|---|
 | `send-text --text "hello"` | テキストをグラスへ送信 |
-| `send-image --file img.png --x 0 --y 0 --width 200 --height 100` | 画像を送信 |
-| `send-json --file payload.json` | display JSON ファイルをそのまま送信 |
+| `send-image --file img.png [--x N] [--y N] [--width N] [--height N] [--image-gamma FLOAT] [--image-dither]` | 画像を送信 |
+| `send-json --file payload.json [--image-gamma FLOAT] [--image-dither]` | display JSON ファイルをそのまま送信 |
 | `mic --on` / `mic --off` | マイクを有効化・無効化 |
 | `status` | 現在のゲートウェイ状態を表示 |
 | `events` | WebSocket イベントを標準出力へストリーミング |
@@ -258,6 +287,48 @@ python gateway_cli.py [--server URL] [--ws-path PATH] <command>
 
 単一コンテナ寸法を超える画像は自動でタイル分割されます。  
 各ページにはイベント捕捉対象の text/list コンテナがちょうど 1 個必要で、必要時はゲートウェイが自動補完します。
+
+---
+
+## サンプル
+
+### `example_character_game.py` — キャラクターゲーム UI
+
+キャラクターのセリフ画面を眼鏡に描画し、スワイプジェスチャーで選択肢を操作する  
+スタンドアローンのデモスクリプトです。
+
+**レイアウト（Canvas 576 × 288）：**
+
+```
+┌──────────┬─────────────────────────────────────┐
+│ アイコン  │ セリフテキスト                       │
+│ 100×100  │                                     │
+├──────────┴─────────────────────────────────────┤
+│ 選択肢一覧（capture_events=True）               │
+│   > 話しかける                                  │
+│     アイテムを使う                              │
+│     その場を去る                                │
+└────────────────────────────────────────────────┘
+```
+
+**操作方法：**
+
+| ジェスチャー | 動作 |
+|---|---|
+| スワイプ上 | カーソルを上へ移動 |
+| スワイプ下 | カーソルを下へ移動 |
+| シングルタップ | 選択を決定 |
+
+**前提条件：** ゲートウェイサーバーが起動していること（`python gateway_server.py`）
+
+```bash
+# カスタムアイコン画像を用意する場合（省略可）
+cp your_icon.png icon.png
+
+python example_character_game.py
+```
+
+`icon.png` が存在しない場合は、シンプルな顔アイコンが自動生成されます。
 
 ---
 
@@ -286,11 +357,12 @@ mentraos/              BLE 通信ライブラリ（G2.kt からの移植）
     MentraOS_LICENSE   MentraOS オリジナルライセンス
     NOTICE.md          帰属表示
 
-gateway_config.py      YAML 設定の読み書き
-gateway_server.py      aiohttp サーバー + Tk GUI エントリポイント
-gateway_cli.py         CLI クライアント
-config/gateway.yaml    ランタイム設定
-ui/                    静的ブラウザフロントエンド
+gateway_config.py           YAML 設定の読み書き
+gateway_server.py           aiohttp サーバー + Tk GUI エントリポイント
+gateway_cli.py              CLI クライアント
+example_character_game.py   キャラクターゲーム UI デモ
+config/gateway.yaml         ランタイム設定
+ui/                         静的ブラウザフロントエンド
 ```
 
 ---

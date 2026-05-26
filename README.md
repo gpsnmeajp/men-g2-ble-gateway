@@ -69,6 +69,10 @@ Additional options:
 | `--no-gui` | Disable the Tk status window |
 | `--debug-raw-events` | Include `glasses.raw_packet` events in WebSocket output |
 | `--log-level LEVEL` | Python logging level (default: `INFO`) |
+| `--clear-saved-addresses` | Clear saved glass addresses on startup and rescan |
+| `--unpair-on-startup` | Attempt OS-level unpair of saved addresses at startup, then rescan |
+| `--image-gamma FLOAT` | Default gamma correction for all images (1.0 = none, <1.0 = brighter; default: `1.0`) |
+| `--image-dither` | Enable 4-bit Floyd-Steinberg dithering for all images |
 
 On first run the gateway scans for a G2 pair, connects, runs the initialisation sequence, and saves the discovered addresses to `config/gateway.yaml` for fast reconnect on subsequent launches.
 
@@ -106,6 +110,7 @@ ble:
   text_queue_interval_ms: 100
   image_settle_delay_ms: 1000
   image_fragment_interval_ms: 200
+  unpair_on_startup: false
 
 gui:
   enabled: true
@@ -169,6 +174,24 @@ Possible `mode` values: `fast_text`, `layout`, `clear`.
 
 ---
 
+### `POST /api/touch`
+
+Synthesise a touch gesture event and broadcast it to all WebSocket clients.
+
+Valid `gesture` values: `single_tap`, `double_tap`, `swipe_up`, `swipe_down`.
+
+```json
+{ "gesture": "single_tap" }
+```
+
+Response:
+
+```json
+{ "accepted": true, "gesture": "single_tap" }
+```
+
+---
+
 ### `GET /api/status`
 
 Returns a snapshot of the server and glasses state:
@@ -179,12 +202,18 @@ Returns a snapshot of the server and glasses state:
   "glasses": {
     "phase": "ready",
     "ready": true,
+    "last_serial_number": "G2_...",
     "mic_enabled": false,
+    "target_mic_enabled": false,
     "battery_level": 85,
     "charging": false,
     "firmware_version": "...",
-    "left": { "address": "...", "connected": true, "authenticated": true },
-    "right": { "address": "...", "connected": true, "authenticated": true }
+    "last_error": "",
+    "last_gesture": "single_tap",
+    "display_surface": "app",
+    "pairing_warning": "",
+    "left": { "address": "...", "mac_address": "...", "connected": true, "authenticated": true },
+    "right": { "address": "...", "mac_address": "...", "connected": true, "authenticated": true }
   }
 }
 ```
@@ -236,8 +265,8 @@ Default server: `http://127.0.0.1:8765`
 | Command | Description |
 |---|---|
 | `send-text --text "hello"` | Send fast text to the glasses |
-| `send-image --file img.png --x 0 --y 0 --width 200 --height 100` | Send an image |
-| `send-json --file payload.json` | Send a raw display JSON file |
+| `send-image --file img.png [--x N] [--y N] [--width N] [--height N] [--image-gamma FLOAT] [--image-dither]` | Send an image |
+| `send-json --file payload.json [--image-gamma FLOAT] [--image-dither]` | Send a raw display JSON file |
 | `mic --on` / `mic --off` | Enable or disable the microphone |
 | `status` | Print current gateway status |
 | `events` | Stream all WebSocket events to stdout |
@@ -258,6 +287,48 @@ Default server: `http://127.0.0.1:8765`
 
 Images larger than a single container are tiled automatically.  
 Every page must have exactly one event-capturing text/list container; the gateway inserts one automatically when needed.
+
+---
+
+## Examples
+
+### `example_character_game.py` — Character game UI
+
+A self-contained demo that renders a character dialogue screen on the glasses
+and lets the user navigate a choice menu with swipe gestures.
+
+**Layout (576 × 288 canvas):**
+
+```
+┌──────────┬─────────────────────────────────────┐
+│ icon     │ dialogue text                       │
+│ 100×100  │                                     │
+├──────────┴─────────────────────────────────────┤
+│ choice list  (capture_events=True)             │
+│   > Talk                                       │
+│     Use item                                   │
+│     Leave                                      │
+└────────────────────────────────────────────────┘
+```
+
+**Controls:**
+
+| Gesture | Action |
+|---|---|
+| Swipe up | Move cursor up |
+| Swipe down | Move cursor down |
+| Single tap | Confirm selection |
+
+**Prerequisites:** gateway server running (`python gateway_server.py`)
+
+```bash
+# Optional: place a custom icon image
+cp your_icon.png icon.png
+
+python example_character_game.py
+```
+
+If `icon.png` is not present, a simple face icon is generated automatically.
 
 ---
 
@@ -286,11 +357,12 @@ mentraos/              BLE communication library (ported from G2.kt)
     MentraOS_LICENSE   Original MentraOS licence
     NOTICE.md          Attribution notice
 
-gateway_config.py      YAML config load / save
-gateway_server.py      aiohttp server + Tk GUI entry point
-gateway_cli.py         CLI client
-config/gateway.yaml    Runtime configuration
-ui/                    Static browser frontend
+gateway_config.py           YAML config load / save
+gateway_server.py           aiohttp server + Tk GUI entry point
+gateway_cli.py              CLI client
+example_character_game.py   Character game UI demo
+config/gateway.yaml         Runtime configuration
+ui/                         Static browser frontend
 ```
 
 ---

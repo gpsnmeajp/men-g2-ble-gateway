@@ -62,6 +62,7 @@ def map_event_type_to_gesture(event_type: OsEventType) -> Optional[str]:
         OsEventType.SCROLL_BOTTOM: "swipe_down",
         OsEventType.FOREGROUND_ENTER: "foreground_enter",
         OsEventType.FOREGROUND_EXIT: "foreground_exit",
+        OsEventType.ABNORMAL_EXIT: "abnormal_exit",
         OsEventType.SYSTEM_EXIT: "system_exit",
     }
     return mapping.get(event_type)

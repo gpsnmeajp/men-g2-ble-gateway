@@ -35,6 +35,18 @@ IMAGE_MIN_HEIGHT = 20
 IMAGE_MAX_HEIGHT = 144
 INITIAL_TEXT_MAX_BYTES = 1000
 
+# 実機安定化用の実行時フラグ。
+#
+# mixed image+text は create/rebuild page message に text content を含める。
+# 画像 raw-data 転送後に追加の text update を送る経路は実機で不安定なため、
+# 既定では無効化する。
+ENABLE_POST_IMAGE_TEXT_REDRAW = False
+
+# 一部 firmware は通常の回復経路でも SYSTEM_EXIT / ABNORMAL_EXIT を送る。
+# これを page reset として扱うと表示キャッシュが消えて空表示へ戻るため、
+# SYSEXIT 起因の runtime reset は既定では無効化する。
+ENABLE_SYSTEM_EXIT_RUNTIME_RESET = False
+
 
 class ServiceID(IntEnum):
     """service_id_def.proto に対応する service ID。"""
@@ -130,6 +142,8 @@ __all__ = [
     "DISPLAY_BIT_DEPTH",
     "DISPLAY_GRAYSCALE_LEVELS",
     "DevCfgCommandId",
+    "ENABLE_POST_IMAGE_TEXT_REDRAW",
+    "ENABLE_SYSTEM_EXIT_RUNTIME_RESET",
     "EvenHubCmd",
     "EvenHubResponseCmd",
     "G2SettingCommandId",

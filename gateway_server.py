@@ -415,6 +415,7 @@ class GatewayStatusWindow:
         self._on_close = on_close
         self._on_clear_saved_addresses = on_clear_saved_addresses
         self._port = port
+        self._normal_label_foreground = ttk.Style().lookup("TLabel", "foreground") or "black"
 
         root.title("Even G2 Gateway")
         root.geometry("860x620")
@@ -424,39 +425,43 @@ class GatewayStatusWindow:
         frame.pack(fill=tk.BOTH, expand=True)
 
         self._labels: Dict[str, Any] = {}
+        self._label_widgets: Dict[str, Any] = {}
         rows = [
-            ("待受", "server"),
-            ("接続フェーズ", "phase"),
+            ("Server", "server"),
+            ("Connection Phase", "phase"),
             ("Ready", "ready"),
-            ("シリアル", "serial"),
-            ("左アドレス", "left_address"),
-            ("右アドレス", "right_address"),
-            ("マイク", "mic"),
-            ("バッテリー", "battery"),
+            ("Serial", "serial"),
+            ("Left Address", "left_address"),
+            ("Right Address", "right_address"),
+            ("Microphone", "mic"),
+            ("Battery", "battery"),
             ("Firmware", "firmware"),
-            ("最終エラー", "error"),
-            ("最終ジェスチャー", "gesture"),
+            ("Last Error", "error"),
+            ("Pairing", "pairing_warning"),
+            ("Last Gesture", "gesture"),
         ]
 
         for row_index, (title, key) in enumerate(rows):
             ttk.Label(frame, text=title).grid(row=row_index, column=0, sticky="w", padx=(0, 8), pady=2)
             variable = tk.StringVar(value="-")
-            ttk.Label(frame, textvariable=variable).grid(row=row_index, column=1, sticky="w", pady=2)
+            value_label = ttk.Label(frame, textvariable=variable)
+            value_label.grid(row=row_index, column=1, sticky="w", pady=2)
             self._labels[key] = variable
+            self._label_widgets[key] = value_label
 
         ttk.Button(
             frame,
-            text="保存済みアドレスをクリア",
+            text="Clear Saved Addresses",
             command=self._on_clear_saved_addresses,
         ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
         ttk.Button(
             frame,
-            text="ブラウザで開く",
+            text="Open in Browser",
             command=self._open_browser,
         ).grid(row=1, column=2, sticky="e", padx=(12, 0))
 
-        ttk.Label(frame, text="イベントログ").grid(row=len(rows), column=0, sticky="w", pady=(12, 4))
+        ttk.Label(frame, text="Event Log").grid(row=len(rows), column=0, sticky="w", pady=(12, 4))
         self._log = ScrolledText(frame, height=20, wrap=tk.WORD)
         self._log.grid(row=len(rows) + 1, column=0, columnspan=2, sticky="nsew")
         frame.columnconfigure(1, weight=1)
@@ -550,7 +555,7 @@ class GatewayStatusWindow:
         self._labels["left_address"].set(left.get("address", "-"))
         self._labels["right_address"].set(right.get("address", "-"))
         self._labels["mic"].set(
-            f"現在={'on' if glasses.get('mic_enabled') else 'off'} / 目標={'on' if glasses.get('target_mic_enabled') else 'off'}"
+            f"Current={'on' if glasses.get('mic_enabled') else 'off'} / Target={'on' if glasses.get('target_mic_enabled') else 'off'}"
         )
         battery = glasses.get("battery_level", -1)
         charging = glasses.get("charging")
@@ -559,6 +564,17 @@ class GatewayStatusWindow:
         firmware = glasses.get("firmware_version") or "-"
         self._labels["firmware"].set(firmware)
         self._labels["error"].set(glasses.get("last_error", "-"))
+        pairing_warning = glasses.get("pairing_warning") or ""
+        self._labels["pairing_warning"].set(pairing_warning or "-")
+        pairing_label = self._label_widgets.get("pairing_warning")
+        if pairing_label is not None:
+            if pairing_warning:
+                pairing_label.configure(foreground="#b42318", font=("TkDefaultFont", 10, "bold"))
+            else:
+                pairing_label.configure(
+                    foreground=self._normal_label_foreground,
+                    font=("TkDefaultFont", 10, "normal"),
+                )
         self._labels["gesture"].set(glasses.get("last_gesture") or "-")
 
 
@@ -566,21 +582,21 @@ def parse_args() -> argparse.Namespace:
     """gateway_server.py の CLI 引数を定義する。"""
 
     parser = argparse.ArgumentParser(description="Even G2 gateway server")
-    parser.add_argument("--config", default="config/gateway.yaml", help="設定 YAML のパス")
-    parser.add_argument("--host", help="待受ホストを上書きする")
-    parser.add_argument("--port", type=int, help="待受ポートを上書きする")
-    parser.add_argument("--search-id", help="スキャン対象のシリアル識別子を上書きする")
-    parser.add_argument("--clear-saved-addresses", action="store_true", help="保存済みアドレスを起動時に消去する")
+    parser.add_argument("--config", default="config/gateway.yaml", help="Path to the settings YAML file")
+    parser.add_argument("--host", help="Override the listening host")
+    parser.add_argument("--port", type=int, help="Override the listening port")
+    parser.add_argument("--search-id", help="Override the target serial identifier for scanning")
+    parser.add_argument("--clear-saved-addresses", action="store_true", help="Clear saved glass addresses on startup")
     parser.add_argument(
         "--unpair-on-startup",
         action="store_true",
-        help="起動時に保存済みグラスアドレスへ OS の unpair を一度だけ試み、その起動は再スキャンする",
+        help="Attempt OS unpair once for saved glass addresses at startup, then rescan for this run",
     )
-    parser.add_argument("--no-gui", action="store_true", help="Tk GUI を起動しない")
-    parser.add_argument("--debug-raw-events", action="store_true", help="glasses.raw_packet を配信する")
-    parser.add_argument("--image-gamma", type=float, default=1.0, help="画像ガンマ補正値 (1.0 = 無補正、<1.0 で明るい)")
-    parser.add_argument("--image-dither", action="store_true", help="4bit Floyd-Steinberg ディザリングを有効化")
-    parser.add_argument("--log-level", default="INFO", help="ロギングレベル")
+    parser.add_argument("--no-gui", action="store_true", help="Do not start the Tk GUI")
+    parser.add_argument("--debug-raw-events", action="store_true", help="Emit glasses.raw_packet events")
+    parser.add_argument("--image-gamma", type=float, default=1.0, help="Image gamma correction value (1.0 = no correction, <1.0 = brighter)")
+    parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
     return parser.parse_args()
 
 
