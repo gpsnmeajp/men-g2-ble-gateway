@@ -1,4 +1,4 @@
-"""Even G2 BLE transport の packet framing 実装。"""
+"""G2 BLE transport の packet framing 実装。"""
 
 from typing import Dict, List, Optional, Tuple
 

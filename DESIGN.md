@@ -1,4 +1,4 @@
-# Even G2 Gateway 設計
+# G2 Gateway 設計
 
 状態: 実装済み。この文書は現在の実装を反映している。
 
@@ -6,7 +6,7 @@
 
 このリポジトリでは、以下の3つの成果物を提供する。
 
-1. MentraOS の G2.kt 実装を元に、Even G2 通信レイヤーを Python に移植した mentraos 配下のライブラリ。
+1. MentraOS の G2.kt 実装を元に、G2 通信レイヤーを Python に移植した mentraos 配下のライブラリ。
 2. gateway_server.py に実装する、HTTP、WebSocket、静的 UI 配信、および任意の Tk GUI を持つゲートウェイサーバー。
 3. gateway_cli.py に実装する、テキスト送信、画像送信、マイク制御、ライブイベント監視に対応した CLI。
 

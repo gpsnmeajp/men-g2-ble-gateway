@@ -1,4 +1,4 @@
-"""Even G2 Gateway を操作する CLI。"""
+"""G2 Gateway を操作する CLI。"""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ async def stream_events(server: str, websocket_path: str) -> None:
 def parse_args() -> argparse.Namespace:
     """CLI 引数を定義する。"""
 
-    parser = argparse.ArgumentParser(description="Even G2 gateway CLI")
+    parser = argparse.ArgumentParser(description="G2 gateway CLI")
     parser.add_argument("--server", default="http://127.0.0.1:8765", help="gateway base URL")
     parser.add_argument("--ws-path", default="/ws", help="WebSocket path")
 

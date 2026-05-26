@@ -1,4 +1,4 @@
-"""Even G2 向け高レベル非同期クライアント。"""
+"""G2 向け高レベル非同期クライアント。"""
 
 from __future__ import annotations
 

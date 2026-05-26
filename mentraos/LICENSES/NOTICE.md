@@ -1,4 +1,4 @@
-このリポジトリの mentraos 配下にある Even G2 通信ロジックは、MentraOS の G2.kt 実装の
+このリポジトリの mentraos 配下にある G2 通信ロジックは、MentraOS の G2.kt 実装の
 挙動と構造を参照して Python へ移植したものです。
 
 参照元:

@@ -1,4 +1,4 @@
-"""Even G2 Gateway の HTTP / WebSocket / GUI サーバー。"""
+"""G2 Gateway の HTTP / WebSocket / GUI サーバー。"""
 
 from __future__ import annotations
 
@@ -417,7 +417,7 @@ class GatewayStatusWindow:
         self._port = port
         self._normal_label_foreground = ttk.Style().lookup("TLabel", "foreground") or "black"
 
-        root.title("Even G2 Gateway")
+        root.title("G2 Gateway")
         root.geometry("860x620")
         root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -581,7 +581,7 @@ class GatewayStatusWindow:
 def parse_args() -> argparse.Namespace:
     """gateway_server.py の CLI 引数を定義する。"""
 
-    parser = argparse.ArgumentParser(description="Even G2 gateway server")
+    parser = argparse.ArgumentParser(description="G2 gateway server")
     parser.add_argument("--config", default="config/gateway.yaml", help="Path to the settings YAML file")
     parser.add_argument("--host", help="Override the listening host")
     parser.add_argument("--port", type=int, help="Override the listening port")

@@ -1,4 +1,4 @@
-# Even G2 Gateway API Specification
+# G2 Gateway API Specification
 
 Status: current implementation
 

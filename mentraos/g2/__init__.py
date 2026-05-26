@@ -1,4 +1,4 @@
-"""Even G2 通信の pure Python 実装群。"""
+"""G2 通信の pure Python 実装群。"""
 
 from .client import G2Client, G2ClientConfig
 from .constants import ServiceID

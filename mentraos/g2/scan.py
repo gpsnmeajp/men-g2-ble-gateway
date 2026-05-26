@@ -1,4 +1,4 @@
-"""Even G2 の BLE スキャン補助。"""
+"""G2 の BLE スキャン補助。"""
 
 from dataclasses import dataclass
 import re

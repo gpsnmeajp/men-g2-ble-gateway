@@ -1,9 +1,11 @@
-# Even G2 BLE Gateway
+# G2 BLE Gateway
 
 > 日本語版は [README_ja.md](README_ja.md) をご覧ください。
 
 A Python gateway that bridges [Even Realities G2](https://www.evenrealities.com/) smart glasses to HTTP, WebSocket, and a local browser UI.  
 The BLE communication layer is ported from the [MentraOS](https://github.com/Mentra-Community/MentraOS) `G2.kt` implementation.
+
+![alt text](image.png)
 
 ---
 
@@ -349,7 +351,7 @@ Tap to start / stop recording.  Decoded audio is saved as a WAV file in `recordi
 
 **LC3 codec setup (liblc3 submodule):**
 
-The Even G2 transmits audio compressed with the LC3 codec.  Build the native shared library
+The G2 transmits audio compressed with the LC3 codec.  Build the native shared library
 once before running:
 
 **Windows (MSYS2 + MinGW-w64):**

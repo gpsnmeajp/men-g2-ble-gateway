@@ -1,7 +1,7 @@
 以下を実装してください
 
 + Pythonで実装してください
-+ G2.kt (MentraOS Project) を元に、mentraosフォルダ配下に、Even G2通信用のライブラリを構築してください(LICENSEを明記し、ファイルは主要処理とは分離されている必要があります。)
++ G2.kt (MentraOS Project) を元に、mentraosフォルダ配下に、G2通信用のライブラリを構築してください(LICENSEを明記し、ファイルは主要処理とは分離されている必要があります。)
 + 上記ライブラリを使って、HTTP & WebSocketサーバー(gateway_server.py)を作成してください。
 
 https://github.com/Mentra-Community/MentraOS/blob/dev/mobile/modules/bluetooth-sdk/android/src/main/java/com/mentra/bluetoothsdk/sgcs/G2.kt

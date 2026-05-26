@@ -15,7 +15,7 @@ Usage:        python example_pcm_record.py
 
 LC3 SETUP (per OS)
 ==================
-The Even G2 transmits microphone audio compressed with the LC3 codec.
+The G2 transmits microphone audio compressed with the LC3 codec.
 This script decodes it using Google's liblc3 reference implementation,
 included as a git submodule at liblc3/.  You must compile the native
 shared library once before running this script.
@@ -96,7 +96,7 @@ _LC3_DLL = str(_LIBLC3_DIR / (
 ))
 
 _LC3_DT_US    = 10_000   # frame duration: 10 ms
-_LC3_FRAME_SZ = 40       # bytes per LC3 frame (fixed for Even G2)
+_LC3_FRAME_SZ = 40       # bytes per LC3 frame (fixed for G2)
 
 # Import the ctypes wrapper bundled with the submodule.
 # On Windows, ctypes.util.find_library("c") returns None, so we
@@ -114,7 +114,7 @@ else:
 GATEWAY_HTTP = "http://127.0.0.1:8765"
 GATEWAY_WS   = "ws://127.0.0.1:8765/ws"
 
-# ─── Audio format (Even G2 fixed) ────────────────────────
+# ─── Audio format (G2 fixed) ────────────────────────
 SAMPLE_RATE  = 16000
 SAMPLE_WIDTH = 2        # bytes  (signed 16-bit)
 CHANNELS     = 1        # mono

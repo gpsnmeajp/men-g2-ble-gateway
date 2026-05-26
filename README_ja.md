@@ -1,9 +1,11 @@
-# Even G2 BLE Gateway
+# G2 BLE Gateway
 
 > English version: [README.md](README.md)
 
 [Even Realities G2](https://www.evenrealities.com/) スマートグラスを HTTP・WebSocket・ブラウザ UI へ橋渡しする Python ゲートウェイです。  
 BLE 通信レイヤーは [MentraOS](https://github.com/Mentra-Community/MentraOS) の `G2.kt` 実装を Python へ移植したものです。
+
+![alt text](image.png)
 
 ---
 
@@ -349,7 +351,7 @@ python example_character_game.py
 
 **LC3 コーデックのセットアップ（liblc3 サブモジュール）：**
 
-Even G2 は LC3 コーデックで圧縮した音声を送信します。  
+G2 は LC3 コーデックで圧縮した音声を送信します。  
 初回のみ、以下の手順でネイティブ共有ライブラリをビルドしてください。
 
 **Windows（MSYS2 + MinGW-w64）:**
