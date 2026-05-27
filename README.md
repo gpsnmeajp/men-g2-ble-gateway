@@ -8,6 +8,8 @@ The BLE communication layer is ported from the [MentraOS](https://github.com/Men
 no cloud, no internet required.  
 offgrid, offline, Local completion processing.
 
+No custom firmware required. works on official firmware(v2.2.20). 
+
 ![alt text](image.png)
 
 ---

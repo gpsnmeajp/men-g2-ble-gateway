@@ -5,7 +5,8 @@
 [Even Realities G2](https://www.evenrealities.com/) スマートグラスを HTTP・WebSocket・ブラウザ UI へ橋渡しする Python ゲートウェイです。  
 BLE 通信レイヤーは [MentraOS](https://github.com/Mentra-Community/MentraOS) の `G2.kt` 実装を Python へ移植したものです。
 
-クラウド・インターネット不要で、ローカル完結で動作します。
+クラウド・インターネット不要で、ローカル完結で動作します。  
+純正ファームウェア(v2.2.20)のまま動き、カスタムファームウェア等への書き換えは必要ありません。  
 
 ![alt text](image.png)
 
