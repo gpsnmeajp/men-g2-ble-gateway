@@ -99,8 +99,8 @@ def parse_args() -> argparse.Namespace:
     send_image_parser.add_argument("--file", required=True, help="Image file path")
     send_image_parser.add_argument("--x", type=int, default=0)
     send_image_parser.add_argument("--y", type=int, default=0)
-    send_image_parser.add_argument("--width", type=int, default=200)
-    send_image_parser.add_argument("--height", type=int, default=100)
+    send_image_parser.add_argument("--width", type=int, default=288)
+    send_image_parser.add_argument("--height", type=int, default=144)
     send_image_parser.add_argument("--image-gamma", type=float, default=None, help="Gamma correction value (1.0 = no correction)")
     send_image_parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
 

@@ -266,8 +266,8 @@ Use this form for positioned text, images, or mixed content.
       "image_base64": "...",
       "x": 0,
       "y": 80,
-      "width": 200,
-      "height": 100
+      "width": 288,
+      "height": 144
     }
   ]
 }
@@ -335,8 +335,8 @@ Instead of elements, the server also accepts a shorthand single-image request:
   "image_base64": "...",
   "x": 0,
   "y": 0,
-  "width": 200,
-  "height": 100,
+  "width": 288,
+  "height": 144,
   "gamma": 0.9,
   "dither": true
 }

@@ -271,8 +271,8 @@ async function updateImagePreview() {
     previewEl.style.display = "none";
     return;
   }
-  const targetWidth = Math.max(1, Number(document.getElementById("imageWidth").value) || 200);
-  const targetHeight = Math.max(1, Number(document.getElementById("imageHeight").value) || 100);
+  const targetWidth = Math.max(1, Number(document.getElementById("imageWidth").value) || 288);
+  const targetHeight = Math.max(1, Number(document.getElementById("imageHeight").value) || 144);
   const keepAspect = document.getElementById("keepAspect").checked;
   const gamma = Math.max(0.01, Number(document.getElementById("gammaValue").value) || 1.0);
   try {
@@ -301,8 +301,8 @@ async function buildLayoutPayloadFromForm() {
 
   const fileInput = document.getElementById("imageFile");
   if (fileInput.files && fileInput.files.length > 0) {
-    const targetWidth = getNumberInputValue("imageWidth", 200, 1);
-    const targetHeight = getNumberInputValue("imageHeight", 100, 1);
+    const targetWidth = getNumberInputValue("imageWidth", 288, 1);
+    const targetHeight = getNumberInputValue("imageHeight", 144, 1);
     const keepAspect = document.getElementById("keepAspect").checked;
     const gamma = Math.max(0.01, getNumberInputValue("gammaValue", 1.0));
     const canvas = await buildProcessedCanvas(fileInput.files[0], targetWidth, targetHeight, keepAspect, gamma);

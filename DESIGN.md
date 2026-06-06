@@ -253,7 +253,7 @@ Kotlin ソースは生成済みクラスではなく、手書きの protobuf 最
 
 重要な設計判断:
 
-Kotlin 側では 400x200 画像を 200x100 の4タイルへ分割して送る安全経路が確認できる。そのため Python 側レンダラーも、外部 HTTP ペイロードではレイアウト指向を維持しつつ、BLE 転送時は公式上限と安全経路の両方を満たすように内部タイル分割を行えるようにする。
+Kotlin 側では 576x288 画像を 288x144 の4タイルへ分割して送る安全経路が確認できる。そのため Python 側レンダラーも、外部 HTTP ペイロードではレイアウト指向を維持しつつ、BLE 転送時は公式上限と安全経路の両方を満たすように内部タイル分割を行えるようにする。
 
 ### 5.9 g2/events.py
 
@@ -497,7 +497,7 @@ flowchart TD
       "text": "header",
       "x": 0,
       "y": 0,
-      "width": 400,
+      "width": 576,
       "height": 50,
       "border_width": 0,
       "border_color": 0,
@@ -510,8 +510,8 @@ flowchart TD
       "text": "body text",
       "x": 0,
       "y": 60,
-      "width": 400,
-      "height": 80,
+      "width": 576,
+      "height": 72,
       "border_width": 0,
       "border_color": 0,
       "border_radius": 0,
@@ -522,9 +522,9 @@ flowchart TD
       "type": "image",
       "image_base64": "...",
       "x": 0,
-      "y": 150,
-      "width": 200,
-      "height": 100
+      "y": 144,
+      "width": 288,
+      "height": 144
     }
   ]
 }
@@ -828,7 +828,7 @@ CLI はデバッグ用途と AI エージェント利用を想定するため、
 コマンド案:
 
 1. send-text --text "hello"
-2. send-image --file image.png --x 0 --y 0 --width 200 --height 100 [--image-gamma FLOAT] [--image-dither]
+2. send-image --file image.png --x 0 --y 0 --width 288 --height 144 [--image-gamma FLOAT] [--image-dither]
 3. send-json --file payload.json [--image-gamma FLOAT] [--image-dither]
 4. mic --on
 5. mic --off
