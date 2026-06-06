@@ -97,6 +97,7 @@ The current implementation enforces these input rules:
 - Final internal page limits are 12 containers total, with at most 8 text containers and 4 image containers.
 - Container names, when present, must be 16 characters or fewer.
 - Large logical images may be split into internal tiles, but the final image container count must not exceed 4.
+- When a later layout request has the same internal text/image container structure, the gateway updates content in place instead of rebuilding the page. For images, only internal tiles whose rendered BMP payload changed are resent.
 
 ### 2.6 WebSocket Delivery Behavior
 
@@ -202,6 +203,7 @@ This HTTP API targets the same G2 display features, but it does not mirror the E
 - If no text element is marked as the capture target, the gateway promotes the first text element automatically. For image-only layouts, it injects an internal full-screen text capture container so gestures still have a receiver.
 - Initial text limits are enforced in UTF-8 bytes, not Unicode character count. Multibyte text may therefore hit the 1000-byte limit earlier than SDK examples that describe a 1000-character limit.
 - Large logical images may be split into multiple internal G2 image containers before transmission. The final internal image container count must still remain within the device limit.
+- The gateway may skip page rebuilds, text updates, and image tile transfers when its current page state already matches the requested layout and rendered content.
 
 #### 3.2.1 Fast Text Request
 
@@ -316,6 +318,14 @@ Validation and normalization rules:
 - The final internal page container count must be 12 or fewer.
 - Image tiles must fit within internal G2 image container constraints after splitting.
 - If the generated internal image tile count exceeds 4, the request is rejected.
+
+Update behavior:
+
+- If the internal text/image container structure changes, the gateway creates or rebuilds the page, then sends all image tile data for that page.
+- If the structure is unchanged, text elements are updated with text update messages only when their content changed.
+- If image payloads, gamma, or dither changed but the structure is unchanged, the gateway renders the new image tiles and sends only tiles whose rendered 4-bit BMP payload differs from the tile currently tracked for that image container.
+- If text and rendered image tile data are unchanged, the gateway skips BLE display traffic for the request.
+- Clear, reconnect, runtime reset, dashboard surface changes, and any layout structure change invalidate the in-place image tile cache.
 
 Practical tips and unsupported styling:
 

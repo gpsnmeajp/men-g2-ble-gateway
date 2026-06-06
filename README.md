@@ -20,6 +20,7 @@ No custom firmware required. works on official firmware(v2.2.20).
 - **Fast text path** — low-latency full-screen text display via in-place update
 - **Layout path** — multi-element pages with positioned text and image containers
 - **Image rendering** — base64/data-URL images converted to 4-bit BMP, tiled within device constraints
+- **Differential display updates** — unchanged layouts avoid page rebuilds, and unchanged image tiles are not resent
 - **Microphone control** — enable/disable the glasses microphone; audio frames streamed over WebSocket
 - **WebSocket broadcast** — all normalised device events delivered to every connected client
 - **CORS and API key auth** — optional cross-origin access and shared-key protection for HTTP/WebSocket APIs
@@ -159,6 +160,7 @@ If `auth.api_key` or `--api-key` is set, HTTP clients must send the key in eithe
 ### `POST /api/display`
 
 Send text or a layout to the glasses.
+If the current page already has the same layout structure, the gateway updates text and image contents in place instead of rebuilding the page; unchanged image tiles are skipped.
 
 **Fast text** (lowest latency):
 
@@ -321,7 +323,7 @@ Default server: `http://127.0.0.1:8765`
 | Initial text per container | ≤ 1 000 UTF-8 bytes |
 | In-place text update | ≤ 1000 bytes |
 
-Images larger than a single container are tiled automatically.  
+Images larger than a single container are tiled automatically. When a later request keeps the same layout structure, the gateway updates image data in place and resends only tiles whose rendered BMP payload changed.
 Every page must have exactly one event-capturing text/list container; the gateway inserts one automatically when needed.
 
 ---

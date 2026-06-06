@@ -6,6 +6,7 @@ import asyncio
 import base64
 from contextlib import suppress
 import copy
+import hashlib
 import inspect
 import logging
 from dataclasses import dataclass
@@ -1009,6 +1010,7 @@ class G2Client:
                 and self._state.page.current_text_content == normalized_text
             ):
                 self._state.page.current_layout_structure = None
+                self._state.page.current_image_tile_signatures = {}
                 self._mark_app_surface()
                 if remember:
                     self._state.page.last_display_request = {"text": text}
@@ -1023,6 +1025,7 @@ class G2Client:
                 self._queue_even_hub_command(message)
                 self._state.page.current_text_content = normalized_text
             self._state.page.current_layout_structure = None
+            self._state.page.current_image_tile_signatures = {}
             if remember:
                 self._state.page.last_display_request = {"text": text}
             await self._emit_status_snapshot()
@@ -1034,13 +1037,13 @@ class G2Client:
         image_dither: bool = False,
         remember: bool = True,
     ) -> None:
-        """text/image レイアウトを rebuild して反映する。"""
+        """text/image レイアウトを差分更新し、必要な場合だけ rebuild する。"""
 
         async with self._display_lock:
             self._force_rebuild_if_dashboard_visible()
-            # 重複排除: ページ構造が既に存在し request が完全一致なら BLE リビルドをスキップ
+            # 同じコンテナ構成なら page rebuild せず、text/image の内容だけを更新する。
             new_elements = [dict(e) for e in elements]
-            new_structure = self._layout_structure_signature(new_elements, image_gamma, image_dither)
+            new_structure = self._layout_structure_signature(new_elements)
             has_user_text = any(str(element.get("type", "")).lower() == "text" for element in new_elements)
             if self._state.page.startup_page_created:
                 prev = self._state.page.last_display_request or {}
@@ -1050,8 +1053,25 @@ class G2Client:
                     new_structure,
                 )
                 if text_update_messages is not None:
+                    image_payload_changed = self._layout_image_payload_changed(
+                        prev,
+                        new_elements,
+                        image_gamma,
+                        image_dither,
+                    )
                     for message in text_update_messages:
                         await self._send_even_hub_command(message)
+                    changed_image_tiles = []
+                    if image_payload_changed:
+                        _, image_tiles = self._build_layout_specs(
+                            new_elements,
+                            image_gamma=image_gamma,
+                            image_dither=image_dither,
+                        )
+                        changed_image_tiles, image_tile_signatures = self._changed_image_tiles(image_tiles)
+                        for tile in changed_image_tiles:
+                            await self._send_image_tile(tile)
+                        self._state.page.current_image_tile_signatures = image_tile_signatures
                     if remember:
                         self._state.page.last_display_request = {
                             "elements": new_elements,
@@ -1059,7 +1079,8 @@ class G2Client:
                             "dither": image_dither,
                         }
                     self._mark_app_surface()
-                    if text_update_messages:
+                    self._state.page.current_layout_structure = new_structure
+                    if text_update_messages or changed_image_tiles:
                         await self._emit_status_snapshot()
                     return
 
@@ -1105,12 +1126,14 @@ class G2Client:
             )
             self._state.page.current_text_content = ""
             self._state.page.current_layout_structure = new_structure
+            self._state.page.current_image_tile_signatures = {}
             self._mark_app_surface()
 
             if image_tiles:
                 await asyncio.sleep(self._config.image_settle_delay_ms / 1000)
                 for tile in image_tiles:
                     await self._send_image_tile(tile)
+                self._state.page.current_image_tile_signatures = self._image_tile_signatures(image_tiles)
                 if ENABLE_POST_IMAGE_TEXT_REDRAW and has_user_text:
                     # 既定では無効。mixed layout の連続送信時に、画像 raw-data
                     # 転送後の追加 text update が page drop を誘発しうる。
@@ -1148,8 +1171,6 @@ class G2Client:
 
         prev_structure = self._layout_structure_signature(
             prev_elements,
-            float(prev.get("gamma", self._config.image_gamma)),
-            bool(prev.get("dither", self._config.image_dither)),
         )
         if prev_structure != new_structure:
             return None
@@ -1176,8 +1197,6 @@ class G2Client:
     def _layout_structure_signature(
         self,
         elements: Sequence[Mapping[str, Any]],
-        image_gamma: float,
-        image_dither: bool,
     ) -> Tuple[Any, ...]:
         text_elements: List[Mapping[str, Any]] = []
         image_elements: List[Mapping[str, Any]] = []
@@ -1219,7 +1238,6 @@ class G2Client:
         for element in image_elements:
             image_signature.append(
                 (
-                    str(element.get("image_base64", "")),
                     int(element.get("x", 0)),
                     int(element.get("y", 0)),
                     int(element.get("width", SCREEN_WIDTH)),
@@ -1228,11 +1246,53 @@ class G2Client:
             )
 
         return (
-            image_gamma,
-            image_dither,
             tuple(text_signature),
             tuple(image_signature),
         )
+
+    def _layout_image_payload_changed(
+        self,
+        prev: Mapping[str, Any],
+        new_elements: Sequence[Mapping[str, Any]],
+        image_gamma: float,
+        image_dither: bool,
+    ) -> bool:
+        new_images = self._layout_image_payloads(new_elements)
+        prev_elements = prev.get("elements")
+        if not isinstance(prev_elements, list):
+            return bool(new_images)
+
+        prev_images = self._layout_image_payloads(prev_elements)
+        if not prev_images and not new_images:
+            return False
+        return (
+            prev_images != new_images
+            or float(prev.get("gamma", self._config.image_gamma)) != image_gamma
+            or bool(prev.get("dither", self._config.image_dither)) != image_dither
+        )
+
+    def _layout_image_payloads(self, elements: Sequence[Mapping[str, Any]]) -> List[str]:
+        return [
+            str(element.get("image_base64", ""))
+            for element in elements
+            if str(element.get("type", "")).lower() == "image"
+        ]
+
+    def _changed_image_tiles(self, image_tiles: Sequence[Any]) -> Tuple[List[Any], Dict[int, str]]:
+        signatures = self._image_tile_signatures(image_tiles)
+        previous = self._state.page.current_image_tile_signatures
+        changed_tiles = [
+            tile
+            for tile in image_tiles
+            if previous.get(int(tile.container_id)) != signatures[int(tile.container_id)]
+        ]
+        return changed_tiles, signatures
+
+    def _image_tile_signatures(self, image_tiles: Sequence[Any]) -> Dict[int, str]:
+        return {
+            int(tile.container_id): hashlib.sha256(tile.bmp_data).hexdigest()
+            for tile in image_tiles
+        }
 
     def _layout_text_contents(self, elements: Sequence[Mapping[str, Any]]) -> List[str]:
         return [
@@ -1247,6 +1307,7 @@ class G2Client:
         self._force_rebuild_if_dashboard_visible()
         if self._state.page.page_created and self._state.page.page_has_fullscreen_text_container:
             self._state.page.current_layout_structure = None
+            self._state.page.current_image_tile_signatures = {}
             self._mark_app_surface()
             return
         normalized_text = initial_text if initial_text else " "
@@ -1286,6 +1347,7 @@ class G2Client:
         self._state.page.page_has_fullscreen_text_container = True
         self._state.page.current_text_content = normalized_text
         self._state.page.current_layout_structure = None
+        self._state.page.current_image_tile_signatures = {}
         self._mark_app_surface()
 
     def _extract_elements(self, request: Mapping[str, Any]) -> List[Mapping[str, Any]]:

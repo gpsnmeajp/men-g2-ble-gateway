@@ -53,6 +53,7 @@ class PageState:
     current_text_content: str = ""
     last_display_request: Optional[Dict[str, Any]] = None
     current_layout_structure: Optional[Any] = None
+    current_image_tile_signatures: Dict[int, str] = field(default_factory=dict)
 
     def reset_runtime_flags(self) -> None:
         """切断や system exit 後にページ所有状態だけを落とす。"""
@@ -63,6 +64,7 @@ class PageState:
         self.page_has_fullscreen_text_container = False
         self.current_text_content = ""
         self.current_layout_structure = None
+        self.current_image_tile_signatures = {}
 
 
 @dataclass
