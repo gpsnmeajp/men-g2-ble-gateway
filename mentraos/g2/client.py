@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import OrderedDict
 from contextlib import suppress
 import copy
 import hashlib
@@ -120,7 +121,7 @@ class G2Client:
         self._left_device_name: str = ""
         self._right_device_name: str = ""
 
-        self._pending_text_msg: Optional[bytes] = None
+        self._pending_text_msgs: OrderedDict[int, bytes] = OrderedDict()
         self._last_even_hub_msg: Optional[bytes] = None
         self._last_even_hub_resends_remaining = 0
         self._even_hub_resend_count = 1
@@ -185,7 +186,7 @@ class G2Client:
         changed = self._state.display_surface != DISPLAY_SURFACE_DASHBOARD
         if changed:
             LOGGER.info("G2 display surface changed to dashboard: %s", reason)
-        self._pending_text_msg = None
+        self._pending_text_msgs.clear()
         self._last_even_hub_resends_remaining = 0
         self._state.display_surface = DISPLAY_SURFACE_DASHBOARD
         self._state.page.reset_runtime_flags()
@@ -198,7 +199,7 @@ class G2Client:
     def _force_rebuild_if_dashboard_visible(self) -> bool:
         if self._state.display_surface != DISPLAY_SURFACE_DASHBOARD:
             return False
-        self._pending_text_msg = None
+        self._pending_text_msgs.clear()
         self._last_even_hub_resends_remaining = 0
         self._state.page.reset_runtime_flags()
         self._state.display_surface = DISPLAY_SURFACE_APP
@@ -260,12 +261,14 @@ class G2Client:
             self._state.page.last_display_request = None
             await self._ensure_startup_page(" ")
             if self._state.page.page_created and self._state.page.page_has_text_container:
+                self._pending_text_msgs.clear()
                 self._queue_even_hub_command(
-                    even_hub.update_text_message(
+                    container_id=self._state.page.text_container_id,
+                    payload=even_hub.update_text_message(
                         container_id=self._state.page.text_container_id,
                         content_length=1,
                         content=" ",
-                    )
+                    ),
                 )
                 self._state.page.current_text_content = " "
             await self._emit_status_snapshot()
@@ -592,7 +595,7 @@ class G2Client:
             if not self._state.ready:
                 return
             cached_display = copy.deepcopy(self._state.page.last_display_request)
-            self._pending_text_msg = None
+            self._pending_text_msgs.clear()
             self._last_even_hub_resends_remaining = 0
             self._state.page.reset_runtime_flags()
             self._mark_app_surface()
@@ -922,7 +925,7 @@ class G2Client:
                 pass
             except Exception:
                 LOGGER.debug("G2 background task had already failed while stopping", exc_info=True)
-        self._pending_text_msg = None
+        self._pending_text_msgs.clear()
         self._last_even_hub_msg = None
         self._last_even_hub_resends_remaining = 0
         self._pending_urgent_writes = 0
@@ -977,7 +980,7 @@ class G2Client:
                 next_deadline += interval
 
     async def _text_queue_loop(self, generation: int) -> None:
-        """最新 text update だけを一定間隔で排出する。"""
+        """container ごとに最新の text update だけを一定間隔で排出する。"""
 
         while not self._stop_event.is_set() and generation == self._connection_generation:
             await asyncio.sleep(self._config.text_queue_interval_ms / 1000)
@@ -986,9 +989,8 @@ class G2Client:
             if not self._is_side_connected("right"):
                 continue
             payload: Optional[bytes] = None
-            if self._pending_text_msg is not None:
-                payload = self._pending_text_msg
-                self._pending_text_msg = None
+            if self._pending_text_msgs:
+                _, payload = self._pending_text_msgs.popitem(last=False)
                 self._last_even_hub_msg = payload
                 self._last_even_hub_resends_remaining = self._even_hub_resend_count
             elif self._last_even_hub_resends_remaining > 0 and self._last_even_hub_msg is not None:
@@ -1022,7 +1024,10 @@ class G2Client:
                     content_length=len(normalized_text.encode("utf-8")),
                     content=normalized_text,
                 )
-                self._queue_even_hub_command(message)
+                self._queue_even_hub_command(
+                    container_id=self._state.page.text_container_id,
+                    payload=message,
+                )
                 self._state.page.current_text_content = normalized_text
             self._state.page.current_layout_structure = None
             self._state.page.current_image_tile_signatures = {}
@@ -1047,7 +1052,7 @@ class G2Client:
             has_user_text = any(str(element.get("type", "")).lower() == "text" for element in new_elements)
             if self._state.page.startup_page_created:
                 prev = self._state.page.last_display_request or {}
-                text_update_messages = self._layout_text_update_messages_if_structure_matches(
+                text_update_messages = self._layout_text_update_commands_if_structure_matches(
                     prev,
                     new_elements,
                     new_structure,
@@ -1059,8 +1064,8 @@ class G2Client:
                         image_gamma,
                         image_dither,
                     )
-                    for message in text_update_messages:
-                        await self._send_even_hub_command(message)
+                    for container_id, message in text_update_messages:
+                        self._queue_even_hub_command(container_id=container_id, payload=message)
                     changed_image_tiles = []
                     if image_payload_changed:
                         _, image_tiles = self._build_layout_specs(
@@ -1113,6 +1118,7 @@ class G2Client:
                 )
                 self._state.page.startup_page_created = True
 
+            self._pending_text_msgs.clear()
             await self._send_even_hub_command(message)
             self._state.page.page_created = True
             self._state.page.page_has_text_container = bool(text_specs)
@@ -1156,12 +1162,12 @@ class G2Client:
                 }
             await self._emit_status_snapshot()
 
-    def _layout_text_update_messages_if_structure_matches(
+    def _layout_text_update_commands_if_structure_matches(
         self,
         prev: Mapping[str, Any],
         new_elements: Sequence[Mapping[str, Any]],
         new_structure: Tuple[Any, ...],
-    ) -> Optional[List[bytes]]:
+    ) -> Optional[List[Tuple[int, bytes]]]:
         if self._state.page.current_layout_structure != new_structure:
             return None
 
@@ -1180,16 +1186,19 @@ class G2Client:
         if len(prev_texts) != len(new_texts):
             return None
 
-        messages: List[bytes] = []
+        messages: List[Tuple[int, bytes]] = []
         for index, (prev_text, new_text) in enumerate(zip(prev_texts, new_texts)):
             self._validate_text_size(new_text, f"text element {index + 1}")
             if prev_text == new_text:
                 continue
             messages.append(
-                even_hub.update_text_message(
-                    container_id=index + 1,
-                    content_length=len(new_text.encode("utf-8")),
-                    content=new_text,
+                (
+                    index + 1,
+                    even_hub.update_text_message(
+                        container_id=index + 1,
+                        content_length=len(new_text.encode("utf-8")),
+                        content=new_text,
+                    ),
                 )
             )
         return messages
@@ -1341,6 +1350,7 @@ class G2Client:
             )
             self._state.page.startup_page_created = True
 
+        self._pending_text_msgs.clear()
         await self._send_even_hub_command(message)
         self._state.page.page_created = True
         self._state.page.page_has_text_container = True
@@ -1671,10 +1681,12 @@ class G2Client:
         while self._pending_urgent_writes > 0 and not self._stop_event.is_set():
             await asyncio.sleep(0)
 
-    def _queue_even_hub_command(self, payload: bytes) -> None:
-        """最新の text update だけを残すようキューイングする。"""
+    def _queue_even_hub_command(self, container_id: int, payload: bytes) -> None:
+        """container_id ごとに最新の text update だけを残すようキューイングする。"""
 
-        self._pending_text_msg = payload
+        if container_id in self._pending_text_msgs:
+            del self._pending_text_msgs[container_id]
+        self._pending_text_msgs[container_id] = payload
 
     def _make_notify_callback(
         self,
