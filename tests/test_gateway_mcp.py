@@ -93,6 +93,22 @@ class FakeGateway:
         return {"kind": "glasses.touch", "data": {"gesture": gesture}}
 
 
+class FakeElicitResult:
+    def __init__(self, action: object, data: object = None) -> None:
+        self.action = action
+        self.data = data
+
+
+class FakeElicitContext:
+    def __init__(self, result: FakeElicitResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    async def elicit(self, message: str, response_type: object) -> FakeElicitResult:
+        self.calls.append({"message": message, "response_type": response_type})
+        return self.result
+
+
 def load_gateway_mcp():
     fastmcp_module = types.ModuleType("fastmcp")
     fastmcp_module.FastMCP = FakeFastMCP
@@ -296,6 +312,24 @@ class GatewayMcpToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["elements"][0]["width"], 10)
         self.assertEqual(payload["elements"][0]["height"], 20)
         self.assertTrue(payload["elements"][0]["image_base64"].startswith("data:image/png;base64,"))
+
+    async def test_ask_client_user_approval_uses_boolean_schema(self) -> None:
+        mcp = gateway_mcp.create_gateway_mcp(FakeGateway())
+        ctx = FakeElicitContext(FakeElicitResult("accept", True))
+
+        result = await mcp.tools["ask_client_user"]("Proceed?", response_kind="approval", ctx=ctx)
+
+        self.assertEqual(result, {"action": "accept", "data": True})
+        self.assertEqual(ctx.calls[0]["response_type"], bool)
+
+    async def test_ask_client_user_choices_are_single_select_schema(self) -> None:
+        mcp = gateway_mcp.create_gateway_mcp(FakeGateway())
+        ctx = FakeElicitContext(FakeElicitResult("accept", "B"))
+
+        result = await mcp.tools["ask_client_user"]("Choose", choices=[" A ", "", "B"], ctx=ctx)
+
+        self.assertEqual(result, {"action": "accept", "data": "B"})
+        self.assertEqual(ctx.calls[0]["response_type"], ["A", "B"])
 
 
 if __name__ == "__main__":

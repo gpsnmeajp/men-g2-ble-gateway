@@ -554,29 +554,14 @@ def create_gateway_mcp(gateway_app: Any = None) -> FastMCP:
         Returns:
             {"action": "accept", "data": ...} または {"action": "reject"} または {"accepted": False, "error": str}
         """
-        response_type: Any
-        if choices:
-            response_type = choices
-        elif response_kind == "integer":
-            response_type = int
-        elif response_kind == "number":
-            response_type = float
-        elif response_kind == "boolean":
-            response_type = bool
-        elif response_kind == "approval":
-            response_type = None
-        else:
-            response_type = str
+        response_type = _client_user_response_type(response_kind, choices)
 
         try:
             result = await ctx.elicit(message=message, response_type=response_type)
         except Exception as exc:
             return {"accepted": False, "error": str(exc)}
 
-        payload = {"action": result.action}
-        if result.action == "accept":
-            payload["data"] = result.data
-        return payload
+        return _format_elicit_result(result)
 
     return mcp
 
@@ -700,6 +685,39 @@ async def _clear_interaction_display(control: GatewayControl, result: dict[str, 
 
 def _display_failed(display_result: dict[str, Any]) -> bool:
     return display_result.get("accepted") is False
+
+
+def _client_user_response_type(
+    response_kind: Literal["text", "integer", "number", "boolean", "approval"],
+    choices: Optional[list[str]],
+) -> Any:
+    cleaned_choices = [str(choice).strip() for choice in choices or [] if str(choice).strip()]
+    if cleaned_choices:
+        return cleaned_choices
+    if response_kind == "integer":
+        return int
+    if response_kind == "number":
+        return float
+    if response_kind == "boolean" or response_kind == "approval":
+        return bool
+    return str
+
+
+def _format_elicit_result(result: Any) -> dict[str, Any]:
+    action = _coerce_elicit_action(getattr(result, "action", ""))
+    payload: dict[str, Any] = {"action": action}
+    if action == "accept":
+        payload["data"] = getattr(result, "data", None)
+    return payload
+
+
+def _coerce_elicit_action(action: Any) -> str:
+    if isinstance(action, str):
+        return action
+    value = getattr(action, "value", None)
+    if isinstance(value, str):
+        return value
+    return str(action)
 
 
 def _clean_choices(choices: list[str]) -> list[str]:
