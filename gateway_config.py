@@ -141,6 +141,26 @@ class GuiConfig:
 
 
 @dataclass
+class McpConfig:
+    """AI エージェントアクセス用の FastMCP サーバー設定。"""
+
+    enabled: bool = False  # FastMCP サーバーを有効化するかどうか
+    host: str = "127.0.0.1"  # FastMCP サーバーの待受ホスト（セキュリティ上、既定は localhost）
+    port: int = 8766  # FastMCP サーバーの待受ポート
+    path: str = "/mcp"  # FastMCP サーバーの HTTP パス
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "McpConfig":
+        defaults = cls()
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), defaults.enabled),
+            host=str(data.get("host", defaults.host)),
+            port=int(data.get("port", defaults.port)),
+            path=str(data.get("path", defaults.path)),
+        )
+
+
+@dataclass
 class CorsConfig:
     """CORS settings for browser clients served from a different origin."""
 
@@ -190,6 +210,7 @@ class GatewayConfig:
     glass: GlassConfig = field(default_factory=GlassConfig)
     ble: BleConfig = field(default_factory=BleConfig)
     gui: GuiConfig = field(default_factory=GuiConfig)
+    mcp: McpConfig = field(default_factory=McpConfig)
     cors: CorsConfig = field(default_factory=CorsConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
 
@@ -202,6 +223,7 @@ class GatewayConfig:
             glass=GlassConfig.from_mapping(_coerce_mapping(data.get("glass"))),
             ble=BleConfig.from_mapping(_coerce_mapping(data.get("ble"))),
             gui=GuiConfig.from_mapping(_coerce_mapping(data.get("gui"))),
+            mcp=McpConfig.from_mapping(_coerce_mapping(data.get("mcp"))),
             cors=CorsConfig.from_mapping(_coerce_mapping(data.get("cors"))),
             auth=AuthConfig.from_mapping(_coerce_mapping(data.get("auth"))),
         )
@@ -280,6 +302,7 @@ __all__ = [
     "GatewayConfigStore",
     "GlassConfig",
     "GuiConfig",
+    "McpConfig",
     "ServerConfig",
     "load_gateway_config",
     "save_gateway_config",

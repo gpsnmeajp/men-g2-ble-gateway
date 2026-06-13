@@ -14,6 +14,7 @@ BLE 通信レイヤーは [MentraOS](https://github.com/Mentra-Community/MentraO
 
 ## 機能
 
+- **FastMCP サーバー** — AI エージェント向けの表示、画像、ステータス、タッチ待機、通知、メニュー、ユーザープロンプトツール
 - **BLE 接続管理** — 左右レンズの自動ペアリング・再接続・ハートビート
 - **高速テキスト経路** — in-place update による低遅延全画面テキスト表示
 - **レイアウト経路** — 位置指定付きテキストと画像コンテナを持つ複合ページ
@@ -39,6 +40,7 @@ BLE 通信レイヤーは [MentraOS](https://github.com/Mentra-Community/MentraO
 ```
 aiohttp
 bleak
+fastmcp>=3.0
 Pillow
 PyYAML
 ```
@@ -74,6 +76,10 @@ python gateway_server.py --no-gui
 | `--port PORT` | 待受ポートを上書き |
 | `--search-id ID` | BLE スキャンを特定のシリアル番号プレフィックスに限定 |
 | `--no-gui` | Tk ステータスウィンドウを起動しない |
+| `--mcp` / `--no-mcp` | FastMCP HTTP サーバーを有効化または無効化 |
+| `--mcp-host HOST` | FastMCP 待受ホストを上書き（既定: `127.0.0.1`） |
+| `--mcp-port PORT` | FastMCP 待受ポートを上書き（既定: `8766`） |
+| `--mcp-path PATH` | FastMCP HTTP パスを上書き（既定: `/mcp`） |
 | `--debug-raw-events` | `glasses.raw_packet` イベントを WebSocket へ含める |
 | `--log-level LEVEL` | Python ロギングレベル（既定: `INFO`） |
 | `--clear-saved-addresses` | 保存済みグラスアドレスを起動時に消去して再スキャン |
@@ -133,6 +139,12 @@ ble:
 gui:
   enabled: true
 
+mcp:
+  enabled: false
+  host: 127.0.0.1
+  port: 8766
+  path: /mcp
+
 cors:
   enabled: false
   allow_origins: []      # 例: ["http://localhost:5173"] または ["*"]
@@ -146,6 +158,41 @@ auth:
   header_name: X-API-Key
   query_parameter: api_key
 ```
+
+---
+
+## FastMCP / AI エージェントアクセス
+
+MCP を有効にしてゲートウェイを起動:
+
+```bash
+python gateway_server.py --no-gui --mcp
+```
+
+MCP クライアントは既定で `http://127.0.0.1:8766/mcp` に接続できます。サーバーはエージェントの一般的なワークフロー向けのツールを公開します:
+
+ネットワークとクライアントが信頼できる場合を除き、MCP リスナーは localhost にバインドしてください。これはエージェント制御サーフェスであり、HTTP API キーのチェックは再利用しません。
+
+- `display_text`: 全画面テキストを表示。
+- `display_image`: data URL、base64 画像、またはローカル画像ファイルパスを表示。
+- `display_layout`: 任意のテキスト/画像レイアウト JSON を表示。
+- `clear_display`: 表示をクリア。
+- `get_status`: ゲートウェイとグラスの状態を取得。
+- `wait_for_touch`: `single_tap`、`double_tap`、`swipe_up`、または `swipe_down` を待機。
+- `ask_user_on_glasses`: 質問を表示し、タッチジェスチャーを選択肢にマッピング。
+- `notify_user_on_glasses`: 一時的な通知を表示し、オプションでクリア。
+- `ask_menu_on_glasses`: スワイプ制御メニューを表示し、タップされた選択を返す。
+- `ask_character_on_glasses`: オプションのアイコンとスワイプ制御選択肢を持つキャラクター対話 UI を表示。
+- `ask_client_user`: MCP クライアント UI がサポートする場合、構造化入力を要求。
+
+すでに実行中のゲートウェイを HTTP 経由で制御する独立した stdio サーバーとして MCP ブリッジを実行することもできます:
+
+```bash
+python gateway_server.py --no-gui
+fastmcp run gateway_mcp.py:mcp
+```
+
+保護されたゲートウェイの場合は `G2_GATEWAY_API_KEY` を設定してください。既定以外のゲートウェイ URL をターゲットにするには、`G2_GATEWAY_URL` と必要に応じて `G2_GATEWAY_WS_PATH` を設定します。
 
 ---
 

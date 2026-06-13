@@ -16,6 +16,7 @@ No custom firmware required. works on official firmware(v2.2.20).
 
 ## Features
 
+- **FastMCP server**: agent-friendly MCP tools for display, images, status, touch waits, notifications, menus, and user prompts
 - **BLE connection management** — automatic pairing, reconnection, and heartbeat for left/right lenses
 - **Fast text path** — low-latency full-screen text display via in-place update
 - **Layout path** — multi-element pages with positioned text and image containers
@@ -41,6 +42,7 @@ No custom firmware required. works on official firmware(v2.2.20).
 ```
 aiohttp
 bleak
+fastmcp>=3.0
 Pillow
 PyYAML
 ```
@@ -76,6 +78,10 @@ Additional options:
 | `--port PORT` | Override the listen port |
 | `--search-id ID` | Restrict BLE scan to a specific serial prefix |
 | `--no-gui` | Disable the Tk status window |
+| `--mcp` / `--no-mcp` | Enable or disable the FastMCP HTTP server |
+| `--mcp-host HOST` | Override the FastMCP listen host (default: `127.0.0.1`) |
+| `--mcp-port PORT` | Override the FastMCP listen port (default: `8766`) |
+| `--mcp-path PATH` | Override the FastMCP HTTP path (default: `/mcp`) |
 | `--debug-raw-events` | Include `glasses.raw_packet` events in WebSocket output |
 | `--log-level LEVEL` | Python logging level (default: `INFO`) |
 | `--clear-saved-addresses` | Clear saved glass addresses on startup and rescan |
@@ -135,6 +141,12 @@ ble:
 gui:
   enabled: true
 
+mcp:
+  enabled: false
+  host: 127.0.0.1
+  port: 8766
+  path: /mcp
+
 cors:
   enabled: false
   allow_origins: []      # e.g. ["http://localhost:5173"] or ["*"]
@@ -148,6 +160,44 @@ auth:
   header_name: X-API-Key
   query_parameter: api_key
 ```
+
+---
+
+## FastMCP / AI Agent Access
+
+Start the gateway with MCP enabled:
+
+```bash
+python gateway_server.py --no-gui --mcp
+```
+
+MCP clients can connect to `http://127.0.0.1:8766/mcp` by default. The server exposes tools for common agent workflows:
+
+Keep the MCP listener bound to localhost unless the network and client are trusted. It is an agent-control surface and does not reuse the HTTP API key checks.
+
+- `display_text`: show full-screen text.
+- `display_image`: show a data URL, base64 image, or local image file path.
+- `display_layout`: show arbitrary text/image layout JSON.
+- `clear_display`: clear the display.
+- `get_status`: read gateway and glasses state.
+- `wait_for_touch`: wait for `single_tap`, `double_tap`, `swipe_up`, or `swipe_down`.
+- `ask_user_on_glasses`: display a question and map touch gestures to choices.
+- `notify_user_on_glasses`: display a temporary notification, then optionally clear it.
+- `ask_menu_on_glasses`: display a swipe-controlled menu and return the tapped selection.
+- `ask_character_on_glasses`: display a character-dialogue UI with an optional image, short text, or symbol icon and swipe-controlled choices.
+- `ask_client_user`: request structured input from the MCP client UI when elicitation is supported.
+
+Display-backed interaction tools clear the glasses display before returning after selection, cancellation, or timeout.
+MCP tools that need an active glasses connection wait up to 15 seconds for `glasses.ready` before failing.
+
+You can also run the MCP bridge as a separate stdio server that controls an already-running gateway over HTTP:
+
+```bash
+python gateway_server.py --no-gui
+fastmcp run gateway_mcp.py:mcp
+```
+
+For a protected gateway, set `G2_GATEWAY_API_KEY`. To target a non-default gateway URL, set `G2_GATEWAY_URL` and optionally `G2_GATEWAY_WS_PATH`.
 
 ---
 

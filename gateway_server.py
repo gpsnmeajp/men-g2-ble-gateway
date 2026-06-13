@@ -87,7 +87,10 @@ class GatewayServerApp:
         self._ws_lock = asyncio.Lock()
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
+        self._mcp_task: Optional[asyncio.Task[None]] = None  # FastMCP サーバータスク（有効時のみ）
         self._last_persisted_identity: Optional[tuple[str, str, str, str, str]] = None
+        # タッチイベント待機中のコルーチン一覧（MCP wait_for_touch 用）
+        self._touch_waiters: list[tuple[asyncio.Future[Dict[str, Any]], Optional[set[str]]]] = []
 
         self._client = G2Client(self._build_g2_client_config(), event_handler=self._handle_client_event)
         @web.middleware
@@ -123,6 +126,7 @@ class GatewayServerApp:
                 port=self._config.server.port,
             )
             await self._site.start()
+            await self._start_mcp_server()
             LOGGER.info(
                 "Gateway server started on http://%s:%s",
                 self._config.server.host,
@@ -135,6 +139,7 @@ class GatewayServerApp:
                 with suppress(Exception):
                     await self._runner.cleanup()
                 self._runner = None
+            await self._stop_mcp_server()
             if client_started:
                 with suppress(Exception):
                     await self._client.stop()
@@ -143,6 +148,7 @@ class GatewayServerApp:
     async def stop(self) -> None:
         """HTTP と BLE の両方を停止する。"""
 
+        await self._stop_mcp_server()
         async with self._ws_lock:
             clients = list(self._ws_clients)
         for websocket in clients:
@@ -155,6 +161,55 @@ class GatewayServerApp:
                 await self._runner.cleanup()
             self._runner = None
         await self._client.stop()
+
+    async def _start_mcp_server(self) -> None:
+        """AI エージェント制御用のオプショナル FastMCP HTTP サーバーを起動する。"""
+
+        if not self._config.mcp.enabled:
+            return
+
+        from gateway_mcp import create_gateway_mcp
+
+        mcp = create_gateway_mcp(self)
+        self._mcp_task = asyncio.create_task(
+            mcp.run_async(
+                transport="http",
+                host=self._config.mcp.host,
+                port=self._config.mcp.port,
+                path=self._config.mcp.path,
+            ),
+            name="g2-fastmcp-server",
+        )
+        await asyncio.sleep(0)
+        if self._mcp_task.done():
+            self._mcp_task.result()
+        self._mcp_task.add_done_callback(self._handle_mcp_task_done)
+        LOGGER.info(
+            "FastMCP server started on http://%s:%s%s",
+            self._config.mcp.host,
+            self._config.mcp.port,
+            self._config.mcp.path,
+        )
+
+    async def _stop_mcp_server(self) -> None:
+        """実行中の FastMCP サーバータスクを停止する。"""
+
+        if self._mcp_task is None:
+            return
+        task = self._mcp_task
+        self._mcp_task = None
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
+    def _handle_mcp_task_done(self, task: asyncio.Task[None]) -> None:
+        """FastMCP サーバータスクが終了した際のコールバック。予期しない終了をログ出力する。"""
+        if task.cancelled() or self._mcp_task is None:
+            return
+        try:
+            task.result()
+        except Exception:
+            LOGGER.exception("FastMCP server stopped unexpectedly")
 
     async def _handle_security(self, request: web.Request, handler: Callable[[web.Request], Any]) -> web.StreamResponse:
         """Apply CORS preflight handling and API key checks before route handlers."""
@@ -305,6 +360,47 @@ class GatewayServerApp:
 
         return web.json_response(self._status_payload())
 
+    async def display_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/display と同じ経路で表示ペイロードを送信する。MCP ツールから呼ばれる。"""
+
+        return await self._client.display(payload)
+
+    def status_payload(self) -> Dict[str, Any]:
+        """HTTP および MCP 呼び出し元が使用する現在のステータスペイロードを返す。"""
+
+        return self._status_payload()
+
+    async def wait_for_touch(
+        self,
+        timeout_sec: float = 60.0,
+        allowed_gestures: Optional[set[str]] = None,
+    ) -> Dict[str, Any]:
+        """次のタッチイベントを待機する。オプションで特定のジェスチャーのみに限定できる。
+        
+        Args:
+            timeout_sec: タイムアウト秒数
+            allowed_gestures: 許可するジェスチャーの集合（None の場合は全て許可）
+        
+        Returns:
+            タッチイベントの辞書
+        
+        Raises:
+            asyncio.TimeoutError: タイムアウト時
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Dict[str, Any]] = loop.create_future()
+        normalized_allowed = set(allowed_gestures) if allowed_gestures else None
+        self._touch_waiters.append((future, normalized_allowed))
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_sec)
+        finally:
+            # 完了したタスクを待機リストから削除
+            self._touch_waiters = [
+                (waiter, gestures)
+                for waiter, gestures in self._touch_waiters
+                if waiter is not future
+            ]
+
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
         """イベントブロードキャスト用 WebSocket。"""
 
@@ -354,6 +450,8 @@ class GatewayServerApp:
             outbound_event = dict(event)
             outbound_event["data"] = self._status_payload()
             self._persist_identity_from_status(outbound_event["data"])
+        elif event.get("kind") == "glasses.touch":
+            self._resolve_touch_waiters(event)
 
         if self._ui_event_queue is not None:
             with suppress(queue.Full):
@@ -373,6 +471,24 @@ class GatewayServerApp:
 
         for websocket in stale_clients:
             await self._drop_websocket_client(websocket)
+
+    def _resolve_touch_waiters(self, event: Dict[str, Any]) -> None:
+        """タッチイベントが発生した際、待機中のコルーチンを解決する。
+        
+        allowed_gestures が指定されている場合は、マッチするジェスチャーの待機者のみ解決する。
+        """
+        gesture = str(event.get("data", {}).get("gesture", ""))
+        remaining_waiters: list[tuple[asyncio.Future[Dict[str, Any]], Optional[set[str]]]] = []
+        for future, allowed_gestures in self._touch_waiters:
+            if future.done():
+                continue
+            # 許可ジェスチャーが指定されていて、現在のジェスチャーが含まれない場合はスキップ
+            if allowed_gestures is not None and gesture not in allowed_gestures:
+                remaining_waiters.append((future, allowed_gestures))
+                continue
+            # マッチしたのでイベントをセットして待機解除
+            future.set_result(event)
+        self._touch_waiters = remaining_waiters
 
     async def clear_saved_glass_addresses(self) -> None:
         """次回再接続用の保存済みアドレスを明示的に消す。"""
@@ -416,6 +532,12 @@ class GatewayServerApp:
                 "static_dir": self._config.server.static_dir,
                 "cors_enabled": bool(self._config.cors.enabled),
                 "auth_required": bool(self._config.auth.api_key),
+                "mcp": {
+                    "enabled": bool(self._config.mcp.enabled),
+                    "host": self._config.mcp.host,
+                    "port": self._config.mcp.port,
+                    "path": self._config.mcp.path,
+                },
             },
             "glasses": self._client.get_status(),
         }
@@ -701,6 +823,11 @@ def parse_args() -> argparse.Namespace:
         help="Attempt OS unpair once for saved glass addresses at startup, then rescan for this run",
     )
     parser.add_argument("--no-gui", action="store_true", help="Do not start the Tk GUI")
+    parser.add_argument("--mcp", dest="mcp_enabled", action="store_true", default=None, help="Start the FastMCP HTTP server")
+    parser.add_argument("--no-mcp", dest="mcp_enabled", action="store_false", default=None, help="Do not start the FastMCP HTTP server")
+    parser.add_argument("--mcp-host", help="Override the FastMCP listening host")
+    parser.add_argument("--mcp-port", type=int, help="Override the FastMCP listening port")
+    parser.add_argument("--mcp-path", help="Override the FastMCP HTTP path")
     parser.add_argument("--debug-raw-events", action="store_true", help="Emit glasses.raw_packet events")
     parser.add_argument("--image-gamma", type=float, default=1.0, help="Image gamma correction value (1.0 = no correction, <1.0 = brighter)")
     parser.add_argument("--image-dither", action="store_true", help="Enable 4-bit Floyd-Steinberg dithering")
@@ -735,6 +862,14 @@ def load_config_from_args(args: argparse.Namespace) -> tuple[GatewayConfig, Gate
         config.glass.search_id = args.search_id
     if args.no_gui:
         config.gui.enabled = False
+    if args.mcp_enabled is not None:
+        config.mcp.enabled = bool(args.mcp_enabled)
+    if args.mcp_host:
+        config.mcp.host = args.mcp_host
+    if args.mcp_port:
+        config.mcp.port = args.mcp_port
+    if args.mcp_path:
+        config.mcp.path = args.mcp_path
     if args.api_key is not None:
         config.auth.api_key = args.api_key
     cors_allow_origins = _split_cli_values(args.cors_allow_origin)

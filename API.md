@@ -13,11 +13,12 @@ This document describes the HTTP and WebSocket interfaces currently implemented 
 - CORS: optional, disabled by default
 - Response format: JSON for API endpoints
 
-The gateway exposes three kinds of interfaces:
+The gateway exposes four kinds of interfaces:
 
 1. HTTP endpoints for display control, microphone control, synthetic touch injection, and status inspection.
 2. A WebSocket endpoint for real-time status and device events.
 3. Static UI assets served from the same process.
+4. An optional FastMCP HTTP server for AI-agent display control and user interaction tools.
 
 ## 2. Conventions and Runtime Notes
 
@@ -107,6 +108,46 @@ The current implementation enforces these input rules:
 - Slow clients are disconnected if their queue overflows.
 - glasses.raw_packet events are only emitted when the server is started with debug raw packet output enabled.
 
+### 2.7 FastMCP Interface
+
+FastMCP is disabled by default. Start it with:
+
+```bash
+python gateway_server.py --mcp
+```
+
+Default MCP endpoint:
+
+```text
+http://127.0.0.1:8766/mcp
+```
+
+Security note: keep this endpoint bound to localhost unless the network and MCP client are trusted. The MCP listener is a separate agent-control surface and does not reuse the `/api/*` API key checks.
+
+Related CLI/config options:
+
+- `--mcp` / `--no-mcp`
+- `--mcp-host HOST`
+- `--mcp-port PORT`
+- `--mcp-path PATH`
+- YAML section: `mcp.enabled`, `mcp.host`, `mcp.port`, `mcp.path`
+
+Exposed MCP tools:
+
+- `display_text`
+- `display_image`
+- `display_layout`
+- `clear_display`
+- `get_status`
+- `wait_for_touch`
+- `ask_user_on_glasses`
+- `notify_user_on_glasses`
+- `ask_menu_on_glasses`
+- `ask_character_on_glasses`
+- `ask_client_user`
+
+`display_image` accepts a data URL, raw base64 string, or local image file path. `ask_user_on_glasses` displays a question and maps touch gestures to up to four choices in this order: `single_tap`, `double_tap`, `swipe_up`, `swipe_down`. `ask_menu_on_glasses` and `ask_character_on_glasses` use `swipe_up` / `swipe_down` to move the cursor, `single_tap` to select, and `double_tap` to cancel. `ask_character_on_glasses.icon` accepts a data URL, raw base64 string, local image file path, or short text/symbol such as `♡`. Display-backed interaction tools clear the glasses display before returning after selection, cancellation, or timeout. MCP tools that need an active glasses connection wait up to 15 seconds for `glasses.ready` before failing. `notify_user_on_glasses` displays a temporary message. `ask_client_user` uses MCP elicitation when the client supports it.
+
 ## 3. HTTP API
 
 ### 3.1 GET /api/status
@@ -121,7 +162,13 @@ Example response:
     "host": "0.0.0.0",
     "port": 8765,
     "websocket_path": "/ws",
-    "static_dir": "ui"
+    "static_dir": "ui",
+    "mcp": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 8766,
+      "path": "/mcp"
+    }
   },
   "glasses": {
     "phase": "ready",
