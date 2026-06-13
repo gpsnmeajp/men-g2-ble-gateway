@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import suppress
 import datetime
 import hmac
@@ -11,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 import queue
+import signal
 import threading
 from typing import Any, Callable, Dict, Optional
 
@@ -24,6 +26,9 @@ from mentraos.g2.events import EventFactory
 LOGGER = logging.getLogger(__name__)
 
 WEBSOCKET_CLIENT_QUEUE_SIZE = 128
+MCP_STOP_TIMEOUT_SEC = 3.0
+CLIENT_STOP_TIMEOUT_SEC = 5.0
+SERVER_STOP_TIMEOUT_SEC = 8.0
 
 
 class _WebSocketClient:
@@ -155,12 +160,19 @@ class GatewayServerApp:
             await self._drop_websocket_client(websocket)
 
         if self._site is not None:
+            with suppress(Exception):
+                await self._site.stop()
             self._site = None
         if self._runner is not None:
             with suppress(Exception):
                 await self._runner.cleanup()
             self._runner = None
-        await self._client.stop()
+        try:
+            await asyncio.wait_for(self._client.stop(), timeout=CLIENT_STOP_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            LOGGER.warning("Timed out stopping G2 client after %.1f seconds", CLIENT_STOP_TIMEOUT_SEC)
+        except Exception:
+            LOGGER.exception("Failed to stop G2 client")
 
     async def _start_mcp_server(self) -> None:
         """AI エージェント制御用のオプショナル FastMCP HTTP サーバーを起動する。"""
@@ -199,8 +211,14 @@ class GatewayServerApp:
         task = self._mcp_task
         self._mcp_task = None
         task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=MCP_STOP_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            pass
+        except asyncio.TimeoutError:
+            LOGGER.warning("Timed out stopping FastMCP server after %.1f seconds", MCP_STOP_TIMEOUT_SEC)
+        except Exception:
+            LOGGER.debug("FastMCP server task failed during shutdown", exc_info=True)
 
     def _handle_mcp_task_done(self, task: asyncio.Task[None]) -> None:
         """FastMCP サーバータスクが終了した際のコールバック。予期しない終了をログ出力する。"""
@@ -887,17 +905,29 @@ async def run_headless(server: GatewayServerApp) -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signame in ("SIGINT", "SIGTERM"):
-        signal_obj = getattr(__import__("signal"), signame, None)
+        signal_obj = getattr(signal, signame, None)
         if signal_obj is None:
             continue
-        with suppress(NotImplementedError):
+        with suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(signal_obj, stop_event.set)
-
     await server.start()
     try:
         await stop_event.wait()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        LOGGER.info("Shutdown requested")
     finally:
-        await server.stop()
+        await stop_server_with_timeout(server)
+
+
+async def stop_server_with_timeout(server: GatewayServerApp) -> None:
+    """Stop the server without letting shutdown awaitables block process exit."""
+
+    try:
+        await asyncio.wait_for(server.stop(), timeout=SERVER_STOP_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        LOGGER.warning("Timed out stopping gateway server after %.1f seconds", SERVER_STOP_TIMEOUT_SEC)
+    except Exception:
+        LOGGER.exception("Failed to stop gateway server")
 
 
 def run_with_gui(config: GatewayConfig, config_store: GatewayConfigStore, args: argparse.Namespace) -> None:
@@ -932,7 +962,11 @@ def run_with_gui(config: GatewayConfig, config_store: GatewayConfigStore, args: 
         if shutdown_started:
             return
         shutdown_started = True
-        asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
+        future = asyncio.run_coroutine_threadsafe(stop_server_with_timeout(server), loop)
+        try:
+            future.result(timeout=SERVER_STOP_TIMEOUT_SEC + 1.0)
+        except FutureTimeoutError:
+            LOGGER.warning("Timed out waiting for GUI shutdown")
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
 
@@ -940,8 +974,27 @@ def run_with_gui(config: GatewayConfig, config_store: GatewayConfigStore, args: 
         asyncio.run_coroutine_threadsafe(server.clear_saved_glass_addresses(), loop).result()
 
     root = tk.Tk()
-    GatewayStatusWindow(root, ui_queue, on_close, on_clear_saved_addresses, port=config.server.port)
-    root.mainloop()
+    window = GatewayStatusWindow(root, ui_queue, on_close, on_clear_saved_addresses, port=config.server.port)
+
+    def request_close_from_signal(signum: int, frame: Any) -> None:
+        LOGGER.info("Shutdown requested by signal %s", signum)
+        with suppress(Exception):
+            root.after(0, window.close)
+
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM) if hasattr(signal, "SIGTERM") else None
+    signal.signal(signal.SIGINT, request_close_from_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, request_close_from_signal)
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        LOGGER.info("Shutdown requested")
+        window.close()
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+        if hasattr(signal, "SIGTERM") and previous_sigterm_handler is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 def main() -> None:
@@ -964,7 +1017,10 @@ def main() -> None:
         image_gamma=args.image_gamma,
         image_dither=args.image_dither,
     )
-    asyncio.run(run_headless(server))
+    try:
+        asyncio.run(run_headless(server))
+    except KeyboardInterrupt:
+        LOGGER.info("Shutdown interrupted")
 
 
 if __name__ == "__main__":
