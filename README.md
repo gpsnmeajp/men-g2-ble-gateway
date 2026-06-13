@@ -184,10 +184,10 @@ Keep the MCP listener bound to localhost unless the network and client are trust
 - `ask_user_on_glasses`: display a question and map touch gestures to choices.
 - `notify_user_on_glasses`: display a temporary notification, then optionally clear it.
 - `ask_menu_on_glasses`: display a swipe-controlled menu and return the tapped selection.
-- `ask_character_on_glasses`: display a character-dialogue UI with an optional image, short text, or symbol icon and swipe-controlled choices.
+- `ask_character_on_glasses`: display a game-style dialogue UI with a speaker icon (image, short text, or emoji) and swipe-controlled choices.
 - `ask_client_user`: request structured input from the MCP client UI when elicitation is supported.
 
-Display-backed interaction tools clear the glasses display before returning after selection, cancellation, or timeout.
+Display-backed interaction tools (`ask_user_on_glasses`, `ask_menu_on_glasses`, `ask_character_on_glasses`) automatically clear the glasses display before returning after selection, cancellation, or timeout.
 MCP tools that need an active glasses connection wait up to 15 seconds for `glasses.ready` before failing.
 
 You can also run the MCP bridge as a separate stdio server that controls an already-running gateway over HTTP:
